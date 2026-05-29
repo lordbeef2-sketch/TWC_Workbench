@@ -15,6 +15,7 @@ from app.models.domain import PresetServerDefinition
 LEGACY_TWC_AUTH_PATHS = {
     "/osmc/authen/login",
     "/osmc/login.html",
+    "/authentication/saml2/sso/tssd-twc2022x",
     "/authentication/saml2/sso/tssd-twc2024x",
 }
 

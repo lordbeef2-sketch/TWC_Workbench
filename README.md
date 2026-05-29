@@ -1,6 +1,6 @@
 # TWC Workbench
 
-TWC Workbench is a server-backed enterprise web application for Teamwork Cloud 2024x. It provides secure TWC authentication, workspace navigation, model browsing, item details, item editing where supported by the Teamwork Cloud API, and compare workflows derived from `contracts/RealSwagger.json`.
+TWC Workbench is a server-backed enterprise web application for Teamwork Cloud 2022x. It provides secure TWC authentication, workspace navigation, model browsing, item details, item editing where supported by the Teamwork Cloud API, and compare workflows derived from `contracts/RealSwagger.json`.
 
 ## Architecture Summary
 
@@ -65,7 +65,7 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
 The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
-`Sign In via TWC` is the primary sign-in path. It redirects to the Authentication Server for the selected Teamwork Cloud preset, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, refreshes that token when the AuthServer returns a refresh token, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. The documented deployment profile for this project is a Teamwork Cloud 2024x server, with `TWC_AUTH_SERVER_OVERRIDES` available when that 2024x environment uses an explicit Authentication Server host or proxy path. `Use TWC Token` remains the explicit fallback.
+`Sign In via TWC` is the primary sign-in path. It redirects to the Authentication Server for the selected Teamwork Cloud preset, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, refreshes that token when the AuthServer returns a refresh token, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. The documented deployment profile for this project is a Teamwork Cloud 2022x server, with `TWC_AUTH_SERVER_OVERRIDES` available when that 2022x environment uses an explicit Authentication Server host or proxy path. `Use TWC Token` remains the explicit fallback.
 OSLC remains a separate API lane from `/osmc`. The workbench now includes an OSLC Explorer that discovers `/oslc/api/rootservices`, authorizes through OAuth 1.0a consumer endpoints, signs OSLC GET requests with an approved consumer key/secret, and can generate an OSLC consumer key from `jfs:oauthRequestConsumerKeyUrl` when the server publishes that root-services link.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
@@ -73,7 +73,7 @@ Important settings:
 
 - `HOST`: bind address for this app only. Use `0.0.0.0`, `127.0.0.1`, or a local interface IP. Do not put the Teamwork Cloud FQDN here.
 - `FRONTEND_ORIGIN`: allowed browser origin for local development or deployment.
-- `APP_ORIGIN`: optional public origin of this app when it is served behind a reverse proxy. Defaults to `FRONTEND_ORIGIN` when left empty. Set this in deployed environments if you want the app to auto-register Teamwork Cloud 2024x branch webhooks for cache refresh.
+- `APP_ORIGIN`: optional public origin of this app when it is served behind a reverse proxy. Defaults to `FRONTEND_ORIGIN` when left empty. Set this in deployed environments if you want the app to auto-register Teamwork Cloud branch webhooks for cache refresh where supported.
 - `SESSION_SECRET`: replace with a long random secret in every non-local environment. It encrypts stored per-user delegated credentials inside the app session.
 - `TWC_PRESET_SERVERS`: JSON array of preset Teamwork Cloud servers loaded at startup for pre-login discovery.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
@@ -91,7 +91,7 @@ Important settings:
 - `TWC_SAML_LOGIN_PORT`: authorize port used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `8443`.
 - `TWC_SAML_TOKEN_URL`: optional complete AuthServer token URL. Leave blank to derive it from the selected server or authorize URL.
 - `TWC_SAML_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC authorize endpoint. Defaults to `redirect_uri`.
-- `TWC_AUTH_SERVER_OVERRIDES`: optional JSON object keyed by preset server id for explicit 2024x AuthServer hosts, client ids, secrets, ports, paths, scopes, and return parameter names.
+- `TWC_AUTH_SERVER_OVERRIDES`: optional JSON object keyed by preset server id for explicit 2022x AuthServer hosts, client ids, secrets, ports, paths, scopes, and return parameter names.
 - `TWC_OSLC_CONSUMER_KEY`, `TWC_OSLC_CONSUMER_SECRET`: approved OAuth 1.0a consumer credentials for OSLC. These can also be generated from the OSLC Explorer and stored per app session, but generated keys still require admin approval in Teamwork Cloud Settings.
 - `TWC_OSLC_ROOTSERVICES_URL`: optional complete OSLC root services URL. Leave blank to derive `https://<selected-twc-host>:8443/oslc/api/rootservices`.
 - `TWC_OSLC_PORT`, `TWC_OSLC_BASE_PATH`: derivation controls for OSLC when the root services URL is not explicitly set.
@@ -260,19 +260,19 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - The post-login app session is bound to the selected server, not the other way around.
 - Redirect-based `Sign In via TWC` sends the browser to the selected preset's AuthServer authorize endpoint, preserves the selected preset server, and completes the app session on the callback route after exchanging the returned authorization code.
 - The callback URL is the Workbench app URL, normally `https://<workbench-host>/api/auth/callback`; whitelist that same callback in every TWC/AuthServer client registration that should be able to return users to this app.
-- If your 2024x environment uses a separate Authentication Server host, `authentication.client.ids`, `authentication.client.secret`, or proxy path, put those values in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching `TWC_PRESET_SERVERS` id.
+- If your 2022x environment uses a separate Authentication Server host, `authentication.client.ids`, `authentication.client.secret`, or proxy path, put those values in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching `TWC_PRESET_SERVERS` id.
 - If your deployment bypasses the AuthServer code flow, the callback must receive authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your proxy or auth gateway.
 - `Use TWC Token` remains the explicit fallback when your deployment cannot return authenticated TWC context to the callback.
 - If your proxy cannot forward Teamwork Cloud session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.
 - Direct token sign-in is also supported from the landing page. The backend validates the supplied token against `/osmc/admin/currentUser` before opening a workbench session.
 - Optional trusted user headers in `UPSTREAM_USER_HEADERS` are used only as identity hints and authorization context when a reverse proxy already knows the authenticated TWC user; they do not replace the required Teamwork Cloud session cookies or forwarded token for callback completion.
 
-## 2024x Profile
+## 2022x Profile
 
-- The project is configured, documented, and defaulted for Teamwork Cloud `2024x`.
-- New preset server definitions default to version `2024x`.
+- The project is configured, documented, and defaulted for Teamwork Cloud `2022x`.
+- New preset server definitions default to version `2022x`.
 - The adapter uses the verified main TWC Swagger surface for resource, branch, model, and element browsing when the live server exposes those endpoints.
-- Branch rename and branch metadata edit are available on 2024x deployments when the live server accepts the PATCH paths defined in `contracts/RealSwagger.json`.
+- Branch rename and branch metadata edit remain version-gated features and are not part of the default 2022x deployment profile.
 - Unknown or unavailable remote capabilities are not replaced with local workspace fallbacks.
 
 ## Removed API Surface

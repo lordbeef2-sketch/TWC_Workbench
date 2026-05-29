@@ -27,7 +27,7 @@ function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
   return {
     name: "",
     base_url: "",
-    version: "2024x",
+    version: "2022x",
     verify_tls: true,
     ca_bundle_path: null,
     enabled: true,
@@ -98,8 +98,8 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
               onChange={(event) => setField("version", event.target.value as TWCVersion)}
               fullWidth
             >
-              <MenuItem value="2024x">2024x</MenuItem>
               <MenuItem value="2022x">2022x</MenuItem>
+              <MenuItem value="2024x">2024x</MenuItem>
             </TextField>
           </Grid>
           <Grid item xs={12}>

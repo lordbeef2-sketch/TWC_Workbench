@@ -120,7 +120,7 @@ export default function LandingPage() {
               <Stack spacing={2.5} sx={{ height: "100%" }}>
                 <Chip
                   icon={<MonitorHeartRoundedIcon sx={{ color: "inherit !important" }} />}
-                  label="Teamwork Cloud 2024x"
+                  label="Teamwork Cloud 2022x"
                   size="small"
                   variant="outlined"
                   sx={{
@@ -261,7 +261,7 @@ export default function LandingPage() {
             <Stack spacing={2}>
               <Typography variant="h4">Teamwork Cloud Presets</Typography>
               <Typography variant="body2" color="text.secondary">
-                Choose the configured Teamwork Cloud 2024x server before app authentication. Preset definitions are global app data, readable on this landing page without prior login, and managed centrally by administrators.
+                Choose the configured Teamwork Cloud 2022x server before app authentication. Preset definitions are global app data, readable on this landing page without prior login, and managed centrally by administrators.
               </Typography>
               {serversQuery.isLoading ? (
                 <Paper sx={{ p: 4, borderRadius: 5 }}>
@@ -287,7 +287,7 @@ export default function LandingPage() {
                                 </Box>
                               </Stack>
                               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                <Chip label={`Version ${health?.version_hint ?? "2024x"}`} variant="outlined" />
+                                <Chip label={`Version ${health?.version_hint ?? "2022x"}`} variant="outlined" />
                                 <Chip label={`Order ${server.display_order}`} variant="outlined" />
                                 <Chip label="TWC user auth" variant="outlined" />
                                 <Chip label={health?.status ?? "probing"} color={healthColor(health?.status)} />
@@ -347,7 +347,7 @@ export default function LandingPage() {
                 <Typography variant="h5">Operational Guidance</Typography>
                 <Stack spacing={1.5} sx={{ mt: 2 }}>
                   <Typography variant="body2" color="text.secondary">
-                    This deployment exposes Teamwork Cloud presets before login so users can choose the configured 2024x server first. Sign in via TWC preserves that selected server until the callback finishes the app session.
+                    This deployment exposes Teamwork Cloud presets before login so users can choose the configured 2022x server first. Sign in via TWC preserves that selected server until the callback finishes the app session.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     TWC Authentication Server handles SAML. After login, the app exchanges the returned code using the registered client id and Authentication Server secret, then validates the user against Teamwork Cloud.
@@ -365,7 +365,7 @@ export default function LandingPage() {
                     For enterprise deployments, keep certificate validation enabled and provide a CA bundle path when your Teamwork Cloud environment is issued by a private PKI.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Server profiles default to 2024x so the workbench stays aligned to the supported deployment profile.
+                    Server profiles default to 2022x so the workbench stays aligned to the supported deployment profile.
                   </Typography>
                 </Stack>
               </Paper>

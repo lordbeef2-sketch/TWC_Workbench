@@ -49,7 +49,7 @@ class ThemeMode(str, Enum):
 class ServerProfileBase(BaseModel):
     name: str
     base_url: str
-    version: TWCVersion = TWCVersion.V2024X
+    version: TWCVersion = TWCVersion.V2022X
     verify_tls: bool = True
     ca_bundle_path: str | None = None
     enabled: bool = True
