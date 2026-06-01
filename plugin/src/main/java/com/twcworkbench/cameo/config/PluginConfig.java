@@ -15,7 +15,6 @@ public class PluginConfig {
     public String workbenchIngestToken;
     public boolean snapshotOnOpen;
     public boolean snapshotOnSave;
-    public boolean deltaOnClose;
     public boolean insecureTls;
     public int connectTimeoutSeconds;
     public int readTimeoutSeconds;
@@ -27,10 +26,9 @@ public class PluginConfig {
         this.workbenchIngestToken = defaultIfBlank(properties.getProperty("workbench.ingestToken"), DEFAULT_INGEST_TOKEN);
         this.snapshotOnOpen = Boolean.parseBoolean(properties.getProperty("capture.snapshotOnOpen", "true"));
         this.snapshotOnSave = Boolean.parseBoolean(properties.getProperty("capture.snapshotOnSave", "true"));
-        this.deltaOnClose = Boolean.parseBoolean(properties.getProperty("capture.deltaOnClose", "true"));
         this.insecureTls = Boolean.parseBoolean(properties.getProperty("http.insecureTls", "false"));
         this.connectTimeoutSeconds = Integer.parseInt(properties.getProperty("http.connectTimeoutSeconds", "15"));
-        this.readTimeoutSeconds = Integer.parseInt(properties.getProperty("http.readTimeoutSeconds", "300"));
+        this.readTimeoutSeconds = Integer.parseInt(properties.getProperty("http.readTimeoutSeconds", "600"));
         this.serverIdOverride = trimToNull(properties.getProperty("metadata.serverId"));
     }
 
@@ -57,7 +55,6 @@ public class PluginConfig {
             String workbenchIngestToken,
             boolean snapshotOnOpen,
             boolean snapshotOnSave,
-            boolean deltaOnClose,
             boolean insecureTls,
             int connectTimeoutSeconds,
             int readTimeoutSeconds,
@@ -67,7 +64,6 @@ public class PluginConfig {
         this.workbenchIngestToken = defaultIfBlank(workbenchIngestToken, DEFAULT_INGEST_TOKEN);
         this.snapshotOnOpen = snapshotOnOpen;
         this.snapshotOnSave = snapshotOnSave;
-        this.deltaOnClose = deltaOnClose;
         this.insecureTls = insecureTls;
         this.connectTimeoutSeconds = connectTimeoutSeconds;
         this.readTimeoutSeconds = readTimeoutSeconds;
@@ -80,7 +76,6 @@ public class PluginConfig {
         properties.setProperty("workbench.ingestToken", defaultIfBlank(workbenchIngestToken, DEFAULT_INGEST_TOKEN));
         properties.setProperty("capture.snapshotOnOpen", Boolean.toString(snapshotOnOpen));
         properties.setProperty("capture.snapshotOnSave", Boolean.toString(snapshotOnSave));
-        properties.setProperty("capture.deltaOnClose", Boolean.toString(deltaOnClose));
         properties.setProperty("http.insecureTls", Boolean.toString(insecureTls));
         properties.setProperty("http.connectTimeoutSeconds", Integer.toString(connectTimeoutSeconds));
         properties.setProperty("http.readTimeoutSeconds", Integer.toString(readTimeoutSeconds));

@@ -29,7 +29,6 @@ public final class WorkbenchConnectionDialog {
         JCheckBox insecureTlsBox = new JCheckBox("Disable TLS verification for Workbench HTTPS", config.insecureTls);
         JCheckBox snapshotOnOpenBox = new JCheckBox("Capture baseline on project open", config.snapshotOnOpen);
         JCheckBox snapshotOnSaveBox = new JCheckBox("Publish delta on project save (fallback to full snapshot if needed)", config.snapshotOnSave);
-        JCheckBox deltaOnCloseBox = new JCheckBox("Publish delta on project close", config.deltaOnClose);
 
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
@@ -47,7 +46,6 @@ public final class WorkbenchConnectionDialog {
         row = addRow(panel, constraints, row, "", insecureTlsBox);
         row = addRow(panel, constraints, row, "", snapshotOnOpenBox);
         row = addRow(panel, constraints, row, "", snapshotOnSaveBox);
-        row = addRow(panel, constraints, row, "", deltaOnCloseBox);
 
         JLabel note = new JLabel("<html><body style='width: 420px'>"
                 + "Workbench Server ID must exactly match the server profile id inside TWC Workbench, "
@@ -82,7 +80,6 @@ public final class WorkbenchConnectionDialog {
                         new String(ingestTokenField.getPassword()),
                         snapshotOnOpenBox.isSelected(),
                         snapshotOnSaveBox.isSelected(),
-                        deltaOnCloseBox.isSelected(),
                         insecureTlsBox.isSelected(),
                         connectTimeout,
                         readTimeout,

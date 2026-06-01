@@ -39,6 +39,7 @@ import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
+import AccountCircleRoundedIcon from "@mui/icons-material/AccountCircleRounded";
 
 import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
@@ -1612,6 +1613,7 @@ export default function WorkspacePage() {
   );
   const [workspaceMenuGroup, setWorkspaceMenuGroup] = useState<WorkspaceMenuGroup | null>(null);
   const [workspaceMenuAnchorEl, setWorkspaceMenuAnchorEl] = useState<HTMLElement | null>(null);
+  const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<HTMLElement | null>(null);
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -2705,6 +2707,14 @@ export default function WorkspacePage() {
     setWorkspaceMenuAnchorEl(null);
   };
 
+  const openUserMenu = (event: ReactMouseEvent<HTMLElement>) => {
+    setUserMenuAnchorEl(event.currentTarget);
+  };
+
+  const closeUserMenu = () => {
+    setUserMenuAnchorEl(null);
+  };
+
   const currentMenuGroup = (() => {
     if (tab === "developer" || tab === "api") {
       return "api" as const;
@@ -2714,6 +2724,7 @@ export default function WorkspacePage() {
     }
     return "views" as const;
   })();
+  const userMenuLabel = session?.user?.preferred_username || "User";
 
   const selectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
@@ -5059,18 +5070,43 @@ export default function WorkspacePage() {
               </IconButton>
             </span>
           </Tooltip>
-          <Tooltip title="Workspace settings">
-            <IconButton onClick={() => setSettingsOpen(true)}>
-              <SettingsRoundedIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Sign out">
-            <span>
-              <IconButton onClick={() => logoutMutation.mutate()} disabled={!csrfToken || logoutMutation.isPending}>
-                <LogoutRoundedIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<AccountCircleRoundedIcon />}
+            endIcon={<KeyboardArrowDownRoundedIcon />}
+            onClick={openUserMenu}
+            sx={{ minWidth: 0, textTransform: "none" }}
+          >
+            {userMenuLabel}
+          </Button>
+          <Menu
+            anchorEl={userMenuAnchorEl}
+            open={Boolean(userMenuAnchorEl)}
+            onClose={closeUserMenu}
+            keepMounted
+          >
+            <MenuItem disabled>{userMenuLabel}</MenuItem>
+            <MenuItem
+              onClick={() => {
+                closeUserMenu();
+                setSettingsOpen(true);
+              }}
+            >
+              <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
+              Workspace Settings
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                closeUserMenu();
+                logoutMutation.mutate();
+              }}
+              disabled={!csrfToken || logoutMutation.isPending}
+            >
+              <LogoutRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
+              Sign out
+            </MenuItem>
+          </Menu>
         </Toolbar>
       </AppBar>
       <Box

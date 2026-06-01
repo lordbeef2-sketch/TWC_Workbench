@@ -90,38 +90,12 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
     public void projectClosed(Project project) {
         try {
             String key = projectKey(project);
-            BranchSnapshotPayload previous = baselines.get(key);
-            if (!config.deltaOnClose) {
-                baselines.remove(key);
-                dirtyTrackingService.unregister(project);
-                return;
-            }
-
-            DirtyTrackingService.DirtyPublishPlan plan = dirtyTrackingService.preparePublish(project, config, previous, null);
-            if ("no-changes".equals(plan.mode)) {
-                baselines.remove(key);
-                dirtyTrackingService.unregister(project);
-                Application.getInstance().getGUILog().log("[INFO] " + plan.message);
-                return;
-            }
-
-            BranchSnapshotPayload current;
-            WorkbenchIngestClient.PublishResult result;
-            if ("scoped-delta".equals(plan.mode)) {
-                current = plan.currentSnapshot;
-                result = ingestClient.publishWithPrecheck(current, previous, plan.deltaPayload, "close", null);
-            }
-            else {
-                current = snapshotExportService.capture(project, config);
-                result = ingestClient.publishWithPrecheck(current, previous, deltaExportService, "close", null);
-            }
             baselines.remove(key);
             dirtyTrackingService.unregister(project);
-            Application.getInstance().getGUILog().log("[INFO] " + result.message + " " + current.projectName + " [" + current.branchName + "].");
         }
         catch (Exception exception) {
             dirtyTrackingService.unregister(project);
-            Application.getInstance().getGUILog().log("[WARNING] Failed to publish project-close delta: " + exception.getMessage());
+            Application.getInstance().getGUILog().log("[WARNING] Failed to clean up project-close state: " + exception.getMessage());
         }
     }
 

@@ -28,9 +28,9 @@ import java.security.cert.X509Certificate;
 import java.util.function.Consumer;
 
 public class WorkbenchIngestClient {
-    private static final int MIN_LONG_RUNNING_POST_TIMEOUT_SECONDS = 300;
-    private static final int POST_COMPLETION_CONFIRMATION_SECONDS = 180;
-    private static final int POST_COMPLETION_POLL_SECONDS = 10;
+    private static final int MIN_LONG_RUNNING_POST_TIMEOUT_SECONDS = 600;
+    private static final int POST_COMPLETION_CONFIRMATION_SECONDS = 420;
+    private static final int POST_COMPLETION_POLL_SECONDS = 15;
 
     private final PluginConfig config;
     private final ObjectMapper objectMapper;
@@ -213,7 +213,7 @@ public class WorkbenchIngestClient {
                 }
             }
             throw new IOException(
-                    "Workbench ingest timed out before returning a response. Increase the plugin read timeout or retry after Workbench finishes processing the branch snapshot.",
+                    "Workbench ingest timed out before returning a response even after extended confirmation polling. Increase the plugin read timeout or retry after Workbench finishes processing the branch snapshot.",
                     exception
             );
         }
