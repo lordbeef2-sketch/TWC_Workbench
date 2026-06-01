@@ -99,7 +99,7 @@ export default function SettingsDialog({ open, preferences, saving, extraContent
             <Grid item xs={12} md={6}>
               <TextField
                 select
-                label="Item Details View"
+                label="Specification View Mode"
                 value={draft.item_detail_view_mode}
                 onChange={(event) => setField("item_detail_view_mode", event.target.value as ItemDetailViewMode)}
                 fullWidth

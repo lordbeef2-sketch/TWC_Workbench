@@ -20,11 +20,10 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Stack,
-  Tab,
-  Tabs,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -35,6 +34,7 @@ import {
 import Grid from "@mui/material/GridLegacy";
 import CompareArrowsRoundedIcon from "@mui/icons-material/CompareArrowsRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
+import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
@@ -64,9 +64,10 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "agent" | "developer" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "diagram-viewer" | "compare" | "agent" | "developer" | "api";
+type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 
-const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "details", "compare", "agent", "developer", "api"];
+const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "diagram-viewer", "compare", "agent", "developer", "api"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
 const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
   standard: "Standard",
@@ -112,6 +113,9 @@ const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
 
 function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab {
   const fallback: WorkspaceTab = "dashboard";
+  if (value === "details" || value === "diagram-details") {
+    return "models";
+  }
   if (!value || !WORKSPACE_TABS.includes(value as WorkspaceTab)) {
     return fallback;
   }
@@ -750,6 +754,22 @@ function diagramPreviewDataUrl(item: ItemDetails): string | null {
     return null;
   }
   return `data:${format};base64,${encoded}`;
+}
+
+function isDiagramLikeItem(item: ItemDetails | null | undefined): boolean {
+  if (!item) {
+    return false;
+  }
+  const sourcePayload = item.source_payload ?? {};
+  const candidates = [
+    item.item_type,
+    item.name,
+    item.description,
+    typeof sourcePayload.human_type === "string" ? sourcePayload.human_type : "",
+    typeof sourcePayload.metaclass === "string" ? sourcePayload.metaclass : "",
+    typeof sourcePayload.diagram_type === "string" ? sourcePayload.diagram_type : "",
+  ];
+  return candidates.some((candidate) => String(candidate ?? "").toLowerCase().includes("diagram"));
 }
 
 function pythonLiteral(value: string): string {
@@ -1565,6 +1585,7 @@ export default function WorkspacePage() {
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
   const layoutStoragePrefix = `twc-workbench-layout:${sessionCacheKey.join(":")}`;
   const navPaneStorageKey = `${layoutStoragePrefix}:nav-pane-width`;
+  const modelContainmentPaneStorageKey = `${layoutStoragePrefix}:model-containment-pane-width`;
 
   const toggleNewCacheApiKeyScope = (scope: CacheApiKeyScope, checked: boolean) => {
     setNewCacheApiKeyScopes((current) => {
@@ -1585,7 +1606,12 @@ export default function WorkspacePage() {
   const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
   const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
   const [expandedTreeNodeIds, setExpandedTreeNodeIds] = useState<string[]>([]);
-  const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 320, 260, 520));
+  const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 280, 240, 420));
+  const [modelContainmentPaneWidth, setModelContainmentPaneWidth] = useState(() =>
+    readStoredNumber(modelContainmentPaneStorageKey, 320, 260, 460),
+  );
+  const [workspaceMenuGroup, setWorkspaceMenuGroup] = useState<WorkspaceMenuGroup | null>(null);
+  const [workspaceMenuAnchorEl, setWorkspaceMenuAnchorEl] = useState<HTMLElement | null>(null);
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -1620,7 +1646,7 @@ export default function WorkspacePage() {
   const treeContextRef = useRef<string>(treeContextKey);
   const [agentSyncKnowledgeBeforeChat, setAgentSyncKnowledgeBeforeChat] = useState(true);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
-  const projectContextActive = tab === "models" || tab === "details" || tab === "compare";
+  const projectContextActive = tab === "models" || tab === "diagram-viewer" || tab === "compare";
   const treeExpandedStorageKey = `${layoutStoragePrefix}:tree-expanded:${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
   const workspaceOuterPadding = compactUi ? { xs: 1.5, md: 2 } : { xs: 2, md: 3 };
   const panelPadding = compactUi ? 2 : 3;
@@ -1769,13 +1795,18 @@ export default function WorkspacePage() {
   }, [treeExpandedStorageKey]);
 
   useEffect(() => {
-    setNavPaneWidth(readStoredNumber(navPaneStorageKey, 320, 260, 520));
+    setNavPaneWidth(readStoredNumber(navPaneStorageKey, 280, 240, 420));
   }, [navPaneStorageKey]);
+
+  useEffect(() => {
+    setModelContainmentPaneWidth(readStoredNumber(modelContainmentPaneStorageKey, 320, 260, 460));
+  }, [modelContainmentPaneStorageKey]);
 
   useEffect(() => {
     const clampPaneWidths = () => {
       const viewportWidth = window.innerWidth;
-      setNavPaneWidth((current) => clampNumber(current, 260, paneMaxWidthForViewport(viewportWidth, 0.34, 260, 520)));
+      setNavPaneWidth((current) => clampNumber(current, 240, paneMaxWidthForViewport(viewportWidth, 0.28, 240, 420)));
+      setModelContainmentPaneWidth((current) => clampNumber(current, 260, paneMaxWidthForViewport(viewportWidth, 0.34, 260, 460)));
     };
     clampPaneWidths();
     window.addEventListener("resize", clampPaneWidths);
@@ -1785,6 +1816,10 @@ export default function WorkspacePage() {
   useEffect(() => {
     persistStoredValue(navPaneStorageKey, navPaneWidth);
   }, [navPaneStorageKey, navPaneWidth]);
+
+  useEffect(() => {
+    persistStoredValue(modelContainmentPaneStorageKey, modelContainmentPaneWidth);
+  }, [modelContainmentPaneStorageKey, modelContainmentPaneWidth]);
 
   useEffect(() => {
     persistStoredValue(treeExpandedStorageKey, expandedTreeNodeIds);
@@ -2126,6 +2161,8 @@ export default function WorkspacePage() {
   }, [selectedItemId]);
 
   const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
+  const selectedWorkspaceItemIsDiagram = isDiagramLikeItem(selectedWorkspaceItem);
+  const selectedWorkspaceItemDiagramPreviewUrl = selectedWorkspaceItem ? diagramPreviewDataUrl(selectedWorkspaceItem) : null;
   const referenceNameById = useMemo(() => {
     const lookup: Record<string, string> = {};
     projects.forEach((project) => {
@@ -2658,6 +2695,26 @@ export default function WorkspacePage() {
     setTab(nextTab);
   };
 
+  const openWorkspaceMenu = (group: WorkspaceMenuGroup) => (event: ReactMouseEvent<HTMLElement>) => {
+    setWorkspaceMenuGroup(group);
+    setWorkspaceMenuAnchorEl(event.currentTarget);
+  };
+
+  const closeWorkspaceMenu = () => {
+    setWorkspaceMenuGroup(null);
+    setWorkspaceMenuAnchorEl(null);
+  };
+
+  const currentMenuGroup = (() => {
+    if (tab === "developer" || tab === "api") {
+      return "api" as const;
+    }
+    if (tab === "diagram-viewer") {
+      return "diagrams" as const;
+    }
+    return "views" as const;
+  })();
+
   const selectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
     setSelectedBranchId("");
@@ -2672,25 +2729,40 @@ export default function WorkspacePage() {
 
   const selectContainmentNode = (node: TreeNode, preferredTab: WorkspaceTab = "models") => {
     setSelectedItemId(node.id);
-    if (!["models", "details"].includes(tab)) {
+    if (tab !== preferredTab) {
       setTab(preferredTab);
     }
   };
 
   const openNode = (node: TreeNode) => {
     setSelectedItemId(node.id);
-    setTab("details");
+    setTab("models");
   };
 
   const openElementId = (itemId: string) => {
     setSelectedItemId(itemId);
-    setTab("details");
+    setTab("models");
   };
 
   const revealSelectedInTree = () => {
     if (!selectedItemId) {
       return;
     }
+    setTab("models");
+  };
+
+  const openDiagramViewer = () => {
+    if (!selectedWorkspaceItemDiagramPreviewUrl) {
+      return;
+    }
+    setTab("diagram-viewer");
+  };
+
+  const openDiagramDetails = () => {
+    if (!selectedWorkspaceItemIsDiagram) {
+      return;
+    }
+    setSelectedSpecificationSection("properties");
     setTab("models");
   };
 
@@ -3086,7 +3158,7 @@ export default function WorkspacePage() {
         case "properties":
           return (
             <Stack spacing={2}>
-              {options.mode === "details" && options.editable ? (
+              {options.editable ? (
                 <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
                   <Stack spacing={1.5}>
                     <Typography variant="subtitle2">Editable Fields</Typography>
@@ -3522,10 +3594,10 @@ export default function WorkspacePage() {
           <Typography variant="body2" color="text.secondary">
             {selectedProject
               ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`
-              : "Select a project to inspect its published branch tree and properties."}
+              : "Select a project to inspect its published branch tree and specification window."}
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
           <Button
             variant="outlined"
             startIcon={<RefreshRoundedIcon />}
@@ -3542,13 +3614,6 @@ export default function WorkspacePage() {
           >
             Refresh Access Map
           </Button>
-          <Button
-            variant="contained"
-            disabled={!selectedItemId}
-            onClick={() => setTab("details")}
-          >
-            Open Full Details
-          </Button>
         </Stack>
       </Stack>
       {!selectedProject ? (
@@ -3563,7 +3628,7 @@ export default function WorkspacePage() {
         <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
           <Typography variant="h5">Select a branch</Typography>
           <Typography color="text.secondary" sx={{ mt: 1 }}>
-            Model Browser follows one published branch snapshot at a time so we can keep the full tree and properties coherent.
+            Model Browser follows one published branch snapshot at a time so we can keep the full containment tree and specification data coherent.
           </Typography>
         </Paper>
       ) : null}
@@ -3582,44 +3647,112 @@ export default function WorkspacePage() {
         <Alert severity="info">Refreshing the shared access map from Teamwork Cloud permissions.</Alert>
       ) : null}
       {selectedProject && selectedBranchId ? (
-        <Box sx={{ minWidth: 0 }}>
-          {selectedWorkspaceItem ? (
-            <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
-              <Stack spacing={sectionSpacing}>
-                {branchAccessManifestStatus ? (
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
-                    <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
-                    <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
-                  </Stack>
-                ) : null}
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "1fr",
+              xl: `${modelContainmentPaneWidth}px 12px minmax(0, 1fr)`,
+            },
+            gap: 0,
+            minWidth: 0,
+            alignItems: "start",
+          }}
+        >
+          <Paper
+            sx={{
+              p: compactUi ? 1.5 : 2,
+              borderRadius: 2,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: { xs: "none", xl: viewportPanelMaxHeight },
+              overflow: "hidden",
+            }}
+          >
+            <Stack spacing={sectionSpacing} sx={{ minHeight: 0, flex: 1 }}>
+              <TextField label="Filter containment tree" value={treeFilter} onChange={(event) => setTreeFilter(event.target.value)} fullWidth />
+              {branchAccessManifestStatus ? (
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
+                  <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
+                  <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
+                </Stack>
+              ) : null}
+              <Paper variant="outlined" sx={{ p: compactUi ? 1.25 : 1.5, borderRadius: 2 }}>
+                <Stack spacing={0.5}>
+                  <Typography variant="overline" color="text.secondary">
+                    Containment Tree
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Browse the published branch containment just like Cameo, then inspect the selected node in the specification window on the right.
+                  </Typography>
+                </Stack>
+              </Paper>
+              <Box sx={{ minHeight: 0, flex: 1, overflow: "auto", pr: 0.5 }}>
+                <ProjectTree
+                  nodes={visibleTreeNodes}
+                  selectedId={selectedItemId}
+                  filter={treeFilter}
+                  onSelect={(node) => selectContainmentNode(node, "models")}
+                  onExpand={loadTreeChildren}
+                  loadingIds={loadingTreeNodeIds}
+                  expandedIds={expandedTreeNodeIds}
+                  onExpandedChange={setExpandedTreeNodeIds}
+                />
+              </Box>
+            </Stack>
+          </Paper>
+          <Box
+            role="separator"
+            aria-orientation="vertical"
+            sx={resizeHandleStyles()}
+            onMouseDown={(event) => beginHorizontalResize(event, modelContainmentPaneWidth, setModelContainmentPaneWidth, 260, 460)}
+          />
+          <Box sx={{ minWidth: 0, pl: { xs: 0, xl: compactUi ? 1.5 : 2 } }}>
+            {selectedWorkspaceItem ? (
+              <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
                 {renderSpecificationWorkspace(selectedWorkspaceItem, {
                   mode: "browser",
-                  editable: false,
+                  editable: Boolean(selectedWorkspaceItem.editable && canEdit),
                   extraHeader: (
-                    <Stack direction="row" spacing={1}>
-                      <Button size="small" variant="contained" onClick={() => setTab("details")}>
-                        Open Full Details
-                      </Button>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      {selectedWorkspaceItemDiagramPreviewUrl ? (
+                        <Button size="small" variant="contained" onClick={openDiagramViewer}>
+                          View Diagram
+                        </Button>
+                      ) : null}
                       <Button size="small" onClick={() => pickCompareSide("left", selectedWorkspaceItem.id)}>
                         Compare Left
                       </Button>
                       <Button size="small" onClick={() => pickCompareSide("right", selectedWorkspaceItem.id)}>
                         Compare Right
                       </Button>
+                      <Button size="small" variant="outlined" onClick={revealSelectedInTree} disabled={!selectedItemId}>
+                        Reveal In Tree
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<SaveRoundedIcon />}
+                        disabled={!selectedWorkspaceItem.editable || !canEdit || saveItemMutation.isPending}
+                        onClick={() => saveItemMutation.mutate()}
+                      >
+                        Save
+                      </Button>
                     </Stack>
                   ),
                 })}
-              </Stack>
-            </Paper>
-          ) : (
-            <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
-              <Typography variant="h6">Select a model item</Typography>
-              <Typography color="text.secondary" sx={{ mt: 1 }}>
-                Use the main containment tree on the left to pick any node from the published branch tree, then inspect it here.
-              </Typography>
-            </Paper>
-          )}
+              </Paper>
+            ) : (
+              <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+                <Typography variant="h6">Select a model item</Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>
+                  Use the containment tree to the left to pick any node from the published branch tree, then inspect it here.
+                </Typography>
+              </Paper>
+            )}
+          </Box>
         </Box>
       ) : null}
     </Stack>
@@ -3685,6 +3818,85 @@ export default function WorkspacePage() {
             </Stack>
           ),
         })}
+      </Stack>
+    );
+  };
+
+  const renderDiagramViewer = () => {
+    if (!selectedItemId) {
+      return (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a diagram</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Pick a diagram from Model Browser, then use the diagram action to open it here.
+          </Typography>
+        </Paper>
+      );
+    }
+
+    if (itemQuery.isLoading || !selectedWorkspaceItem) {
+      return <CircularProgress size={28} />;
+    }
+
+    if (!selectedWorkspaceItemDiagramPreviewUrl) {
+      return (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">No published diagram preview</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            The selected item does not currently include a viewable published diagram preview. Select a diagram with a preview from Model Browser to open it here.
+          </Typography>
+          <Stack direction="row" spacing={1} justifyContent="center" sx={{ mt: 2 }}>
+            <Button variant="contained" onClick={() => setTab("models")}>
+              Back to Model Browser
+            </Button>
+          </Stack>
+        </Paper>
+      );
+    }
+
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Diagram Viewer</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById, selectedWorkspaceItem.path)}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Button variant="outlined" onClick={openDiagramDetails}>
+              Diagram Details
+            </Button>
+            <Button variant="outlined" onClick={() => setTab("models")}>
+              Back to Model Browser
+            </Button>
+          </Stack>
+        </Stack>
+        <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              maxHeight: viewportPanelMaxHeight,
+              overflow: "auto",
+              bgcolor: "background.paper",
+            }}
+          >
+            <Box
+              component="img"
+              src={selectedWorkspaceItemDiagramPreviewUrl}
+              alt={displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById, selectedWorkspaceItem.path)}
+              sx={{
+                maxWidth: "100%",
+                maxHeight: previewMaxHeight,
+                height: "auto",
+                objectFit: "contain",
+                borderRadius: 1,
+              }}
+            />
+          </Box>
+        </Paper>
       </Stack>
     );
   };
@@ -4928,7 +5140,16 @@ export default function WorkspacePage() {
                 <MenuItem value="">Default</MenuItem>
               )}
             </TextField>
-            <TextField label="Filter model tree" value={treeFilter} onChange={(event) => setTreeFilter(event.target.value)} fullWidth />
+            <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+              <Stack spacing={0.75}>
+                <Typography variant="overline" color="text.secondary">
+                  Workspace Context
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Choose the published project and branch here. The containment tree and specification workspace appear together inside Model Browser.
+                </Typography>
+              </Stack>
+            </Paper>
             {selectedWorkspaceItem ? (
               <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
                 <Stack spacing={compactUi ? 0.5 : 0.75}>
@@ -4957,26 +5178,6 @@ export default function WorkspacePage() {
                 </Stack>
               </Paper>
             ) : null}
-            <Divider />
-            <Box
-              sx={{
-                minHeight: 0,
-                flex: 1,
-                overflow: "auto",
-                pr: 0.5,
-              }}
-            >
-              <ProjectTree
-                nodes={visibleTreeNodes}
-                selectedId={selectedItemId}
-                filter={treeFilter}
-                onSelect={(node) => selectContainmentNode(node, "models")}
-                onExpand={loadTreeChildren}
-                loadingIds={loadingTreeNodeIds}
-                expandedIds={expandedTreeNodeIds}
-                onExpandedChange={setExpandedTreeNodeIds}
-              />
-            </Box>
           </Stack>
         </Paper>
         <Box
@@ -4989,22 +5190,91 @@ export default function WorkspacePage() {
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
           {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
-            <Tabs value={tab} onChange={handleTabChange} variant="scrollable" scrollButtons="auto">
-              <Tab label="Dashboard" value="dashboard" />
-              <Tab label="Project Browser" value="projects" />
-              <Tab label="Model Browser" value="models" />
-              <Tab label="Item Details" value="details" />
-              <Tab label="Compare" value="compare" />
-              <Tab label="Workbench Agent" value="agent" />
-              <Tab label="Developer API" value="developer" />
-              {isAdmin ? <Tab label="API Explorer" value="api" /> : null}
-            </Tabs>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ p: compactUi ? 1 : 1.25 }}>
+              <Button
+                size="small"
+                variant={currentMenuGroup === "views" ? "contained" : "text"}
+                endIcon={<KeyboardArrowDownRoundedIcon />}
+                onClick={openWorkspaceMenu("views")}
+              >
+                Views
+              </Button>
+              <Button
+                size="small"
+                variant={currentMenuGroup === "diagrams" ? "contained" : "text"}
+                endIcon={<KeyboardArrowDownRoundedIcon />}
+                onClick={openWorkspaceMenu("diagrams")}
+              >
+                Diagrams
+              </Button>
+              <Button
+                size="small"
+                variant={currentMenuGroup === "api" ? "contained" : "text"}
+                endIcon={<KeyboardArrowDownRoundedIcon />}
+                onClick={openWorkspaceMenu("api")}
+              >
+                API
+              </Button>
+            </Stack>
+            <Menu
+              anchorEl={workspaceMenuAnchorEl}
+              open={Boolean(workspaceMenuGroup)}
+              onClose={closeWorkspaceMenu}
+              keepMounted
+            >
+              {workspaceMenuGroup === "views" ? (
+                [
+                  <MenuItem key="dashboard" selected={tab === "dashboard"} onClick={() => { setTab("dashboard"); closeWorkspaceMenu(); }}>Dashboard</MenuItem>,
+                  <MenuItem key="projects" selected={tab === "projects"} onClick={() => { setTab("projects"); closeWorkspaceMenu(); }}>Project Browser</MenuItem>,
+                  <MenuItem key="models" selected={tab === "models"} onClick={() => { setTab("models"); closeWorkspaceMenu(); }}>Model Browser</MenuItem>,
+                  <MenuItem key="compare" selected={tab === "compare"} onClick={() => { setTab("compare"); closeWorkspaceMenu(); }}>Compare</MenuItem>,
+                  <MenuItem key="agent" selected={tab === "agent"} onClick={() => { setTab("agent"); closeWorkspaceMenu(); }}>Workbench Agent</MenuItem>,
+                ]
+              ) : null}
+              {workspaceMenuGroup === "diagrams" ? (
+                [
+                  <MenuItem
+                    key="diagram-viewer"
+                    selected={tab === "diagram-viewer"}
+                    disabled={!selectedWorkspaceItemDiagramPreviewUrl}
+                    onClick={() => {
+                      openDiagramViewer();
+                      closeWorkspaceMenu();
+                    }}
+                  >
+                    Diagram Viewer
+                  </MenuItem>,
+                  <MenuItem
+                    key="diagram-details"
+                    disabled={!selectedWorkspaceItemIsDiagram}
+                    onClick={() => {
+                      openDiagramDetails();
+                      closeWorkspaceMenu();
+                    }}
+                  >
+                    Diagram Details
+                  </MenuItem>,
+                ]
+              ) : null}
+              {workspaceMenuGroup === "api" ? (
+                [
+                  <MenuItem key="developer" selected={tab === "developer"} onClick={() => { setTab("developer"); closeWorkspaceMenu(); }}>Developer API</MenuItem>,
+                  ...(isAdmin
+                    ? [
+                        <MenuItem key="api-explorer" selected={tab === "api"} onClick={() => { setTab("api"); closeWorkspaceMenu(); }}>
+                          API Explorer
+                        </MenuItem>,
+                      ]
+                    : []),
+                ]
+              ) : null}
+            </Menu>
           </Paper>
           <Box>
             {tab === "dashboard" ? renderDashboard() : null}
             {tab === "projects" ? renderProjects() : null}
             {tab === "models" ? renderModels() : null}
-            {tab === "details" ? renderDetails() : null}
+            {tab === "diagram-viewer" ? renderDiagramViewer() : null}
             {tab === "compare" ? renderCompare() : null}
             {tab === "agent" ? renderWorkbenchAgent() : null}
             {tab === "developer" ? renderDeveloperApi() : null}

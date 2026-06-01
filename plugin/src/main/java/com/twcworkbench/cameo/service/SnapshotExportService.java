@@ -26,16 +26,20 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public class SnapshotExportService {
     private static final Pattern WORKSPACE_RESOURCE_PATTERN = Pattern.compile("/workspaces/([^/]+)/resources/([^/]+)");
+    private static final long FEATURE_DISABLE_THRESHOLD_NANOS = 250_000_000L;
     private static final List<String> NAVIGATION_HINTS = List.of("navigation", "hyperlink", "link", "url", "uri", "target");
     private static final List<String> TAG_HINTS = List.of("tag", "tagged", "stereotype", "profile", "author", "created", "creation", "modified", "diagraminfo");
     private static final List<String> CONSTRAINT_HINTS = List.of("constraint", "constrained", "guard", "condition", "rule", "expression");
@@ -64,14 +68,15 @@ public class SnapshotExportService {
     }
 
     public BranchSnapshotPayload capture(Project project, PluginConfig config, Consumer<String> progress) {
+        CaptureContext captureContext = new CaptureContext(progress);
         BranchSnapshotPayload payload = createPayloadMetadata(project, config, progress);
 
         Element primaryModel = project.getPrimaryModel();
         if (primaryModel != null) {
             report(progress, "Preparing primary model snapshot...");
-            ModelRecord modelRecord = mapModel(primaryModel);
+            ModelRecord modelRecord = mapModel(primaryModel, captureContext);
             payload.models.add(modelRecord);
-            payload.elements.addAll(traverseElements(project, primaryModel, modelRecord.modelId, progress));
+            payload.elements.addAll(traverseElements(project, primaryModel, modelRecord.modelId, captureContext));
         }
         payload.snapshotHash = snapshotHashService.ensureSnapshotHash(payload);
         report(progress, "Computed snapshot fingerprint " + payload.snapshotHash + ".");
@@ -85,6 +90,7 @@ public class SnapshotExportService {
             Collection<String> elementIds,
             Consumer<String> progress
     ) {
+        CaptureContext captureContext = new CaptureContext(progress);
         BranchSnapshotPayload payload = createPayloadMetadata(project, config, progress);
         Element primaryModel = project.getPrimaryModel();
         if (primaryModel == null) {
@@ -93,7 +99,7 @@ public class SnapshotExportService {
         }
 
         report(progress, "Preparing scoped model snapshot from tracked changes...");
-        ModelRecord modelRecord = mapModel(primaryModel);
+        ModelRecord modelRecord = mapModel(primaryModel, captureContext);
         payload.models.add(modelRecord);
 
         LinkedHashSet<String> requestedIds = new LinkedHashSet<>();
@@ -112,7 +118,7 @@ public class SnapshotExportService {
                 continue;
             }
             Element element = (Element) resolved;
-            payload.elements.add(mapElement(project, element, modelRecord.modelId));
+            payload.elements.add(mapElement(project, element, modelRecord.modelId, captureContext));
             captured += 1;
             if (captured == 1 || captured % 250 == 0) {
                 report(progress, "Captured " + captured + " scoped element(s) so far...");
@@ -122,12 +128,12 @@ public class SnapshotExportService {
         return payload;
     }
 
-    private List<ElementRecord> traverseElements(Project project, Element primaryModel, String modelId, Consumer<String> progress) {
+    private List<ElementRecord> traverseElements(Project project, Element primaryModel, String modelId, CaptureContext captureContext) {
         Map<String, ElementRecord> recordsById = new LinkedHashMap<>();
         Deque<Element> queue = new ArrayDeque<>();
         queue.add(primaryModel);
         int visitedCount = 0;
-        report(progress, "Traversing owned elements recursively...");
+        report(captureContext.progress, "Traversing owned elements recursively...");
 
         while (!queue.isEmpty()) {
             Element current = queue.removeFirst();
@@ -136,11 +142,11 @@ public class SnapshotExportService {
                 continue;
             }
 
-            ElementRecord record = mapElement(project, current, modelId);
+            ElementRecord record = mapElement(project, current, modelId, captureContext);
             recordsById.put(currentId, record);
             visitedCount += 1;
             if (visitedCount == 1 || visitedCount % 250 == 0) {
-                report(progress, "Captured " + visitedCount + " elements so far...");
+                report(captureContext.progress, "Captured " + visitedCount + " elements so far...");
             }
 
             for (Element child : current.getOwnedElement()) {
@@ -187,15 +193,19 @@ public class SnapshotExportService {
         return payload;
     }
 
-    private ModelRecord mapModel(Element model) {
+    private ModelRecord mapModel(Element model, CaptureContext captureContext) {
         ModelRecord record = new ModelRecord();
         record.modelId = safeId(model);
-        record.humanName = safeString(model.getHumanName());
+        record.humanName = safeAccessorString(captureContext, "model.getHumanName", model::getHumanName);
         record.ownerId = model.getOwner() != null ? safeId(model.getOwner()) : null;
         if (model instanceof NamedElement) {
             NamedElement namedModel = (NamedElement) model;
-            record.name = safeString(namedModel.getName());
-            record.qualifiedName = firstNonBlank(namedModel.getQualifiedName(), record.name, record.humanName);
+            record.name = safeAccessorString(captureContext, "model.getName", namedModel::getName);
+            record.qualifiedName = firstNonBlank(
+                    safeAccessorString(captureContext, "model.getQualifiedName", namedModel::getQualifiedName),
+                    record.name,
+                    record.humanName
+            );
         }
         else {
             record.name = record.humanName;
@@ -210,21 +220,29 @@ public class SnapshotExportService {
         return record;
     }
 
-    private ElementRecord mapElement(Project project, Element element, String modelId) {
+    private ElementRecord mapElement(Project project, Element element, String modelId, CaptureContext captureContext) {
         ElementRecord record = new ElementRecord();
         record.elementId = safeId(element);
         record.modelId = modelId;
         record.localId = safeInvokeString(element, "getLocalID");
         record.ownerId = element.getOwner() != null ? safeId(element.getOwner()) : null;
-        record.humanName = safeString(element.getHumanName());
-        record.humanType = firstNonBlank(element.getHumanType(), "element");
+        record.humanName = safeAccessorString(captureContext, "element.getHumanName", element::getHumanName);
+        record.humanType = firstNonBlank(
+                safeAccessorString(captureContext, "element.getHumanType", element::getHumanType),
+                "element"
+        );
         record.metaclass = firstNonBlank(element.eClass().getName(), "Element");
-        record.documentation = safeString(ModelHelper.getComment(element));
+        record.documentation = safeAccessorString(captureContext, "element.getComment", () -> ModelHelper.getComment(element));
 
         if (element instanceof NamedElement) {
             NamedElement namedElement = (NamedElement) element;
-            record.name = safeString(namedElement.getName());
-            record.qualifiedName = firstNonBlank(namedElement.getQualifiedName(), record.name, record.humanName, record.elementId);
+            record.name = safeAccessorString(captureContext, "element.getName", namedElement::getName);
+            record.qualifiedName = firstNonBlank(
+                    safeAccessorString(captureContext, "element.getQualifiedName", namedElement::getQualifiedName),
+                    record.name,
+                    record.humanName,
+                    record.elementId
+            );
         }
         else {
             record.name = record.humanName;
@@ -238,7 +256,7 @@ public class SnapshotExportService {
             }
         }
 
-        extractFeatureData(element, record);
+        extractFeatureData(element, record, captureContext);
         if (element instanceof Diagram) {
             populateDiagramPreview(project, (Diagram) element, record);
         }
@@ -281,12 +299,12 @@ public class SnapshotExportService {
         }
     }
 
-    private void extractFeatureData(Element element, ElementRecord record) {
+    private void extractFeatureData(Element element, ElementRecord record, CaptureContext captureContext) {
         for (EStructuralFeature feature : element.eClass().getEAllStructuralFeatures()) {
-            if (feature.isTransient() || !element.eIsSet(feature)) {
+            if (shouldSkipFeature(feature, captureContext)) {
                 continue;
             }
-            Object value = element.eGet(feature, false);
+            Object value = readFeatureValue(element, feature, captureContext);
             if (value == null) {
                 continue;
             }
@@ -296,6 +314,34 @@ public class SnapshotExportService {
             else {
                 handleSingleFeature(feature.getName(), value, record);
             }
+        }
+    }
+
+    private boolean shouldSkipFeature(EStructuralFeature feature, CaptureContext captureContext) {
+        if (feature == null) {
+            return true;
+        }
+        if (feature.isTransient() || feature.isDerived() || feature.isVolatile()) {
+            return true;
+        }
+        String featureName = feature.getName();
+        return featureName != null && captureContext.disabledFeatures.contains(featureName);
+    }
+
+    private Object readFeatureValue(Element element, EStructuralFeature feature, CaptureContext captureContext) {
+        String featureName = feature.getName();
+        long startedAt = System.nanoTime();
+        try {
+            if (!element.eIsSet(feature)) {
+                return null;
+            }
+            Object value = element.eGet(feature, false);
+            markSlowFeatureIfNeeded(captureContext, featureName, startedAt);
+            return value;
+        }
+        catch (Throwable throwable) {
+            captureContext.disableFeature(featureName, "Expression or derived evaluation failed while reading " + featureName + ". Skipping it for the rest of this capture.");
+            return null;
         }
     }
 
@@ -342,13 +388,27 @@ public class SnapshotExportService {
         if (value == null) {
             return null;
         }
-        if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+        if (value instanceof CharSequence || value instanceof Number || value instanceof Boolean) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Character) {
             return value;
         }
         if (value instanceof Enum<?>) {
             return ((Enum<?>) value).name();
         }
-        return String.valueOf(value);
+        String namedValue = firstNonBlank(
+                safeInvokeString(value, "getName"),
+                safeInvokeString(value, "getHumanName"),
+                safeInvokeString(value, "getQualifiedName")
+        );
+        if (!namedValue.isBlank()) {
+            return namedValue;
+        }
+        if (isSafeJavaValue(value)) {
+            return String.valueOf(value);
+        }
+        return value.getClass().getSimpleName();
     }
 
     private Map<String, Object> buildSpecSections(ElementRecord record) {
@@ -704,6 +764,56 @@ public class SnapshotExportService {
         return value == null ? "" : value;
     }
 
+    private String safeAccessorString(CaptureContext captureContext, String accessorKey, Supplier<String> accessor) {
+        if (captureContext.disabledAccessors.contains(accessorKey)) {
+            return "";
+        }
+        long startedAt = System.nanoTime();
+        try {
+            String value = safeString(accessor.get());
+            markSlowAccessorIfNeeded(captureContext, accessorKey, startedAt);
+            return value;
+        }
+        catch (Throwable throwable) {
+            captureContext.disableAccessor(accessorKey, "Expression or derived evaluation failed while reading " + accessorKey + ". Skipping it for the rest of this capture.");
+            return "";
+        }
+    }
+
+    private void markSlowFeatureIfNeeded(CaptureContext captureContext, String featureName, long startedAt) {
+        if (featureName == null || featureName.isBlank()) {
+            return;
+        }
+        long elapsed = System.nanoTime() - startedAt;
+        if (elapsed >= FEATURE_DISABLE_THRESHOLD_NANOS) {
+            captureContext.disableFeature(
+                    featureName,
+                    "Feature " + featureName + " took " + (elapsed / 1_000_000L) + "ms to evaluate. Skipping it for the rest of this capture to keep export moving."
+            );
+        }
+    }
+
+    private void markSlowAccessorIfNeeded(CaptureContext captureContext, String accessorKey, long startedAt) {
+        if (accessorKey == null || accessorKey.isBlank()) {
+            return;
+        }
+        long elapsed = System.nanoTime() - startedAt;
+        if (elapsed >= FEATURE_DISABLE_THRESHOLD_NANOS) {
+            captureContext.disableAccessor(
+                    accessorKey,
+                    "Accessor " + accessorKey + " took " + (elapsed / 1_000_000L) + "ms to evaluate. Skipping it for the rest of this capture to keep export moving."
+            );
+        }
+    }
+
+    private boolean isSafeJavaValue(Object value) {
+        Package valuePackage = value.getClass().getPackage();
+        String packageName = valuePackage == null ? "" : valuePackage.getName();
+        return packageName.startsWith("java.")
+                || packageName.startsWith("javax.")
+                || packageName.startsWith("org.joda.time");
+    }
+
     private String firstNonBlank(String... values) {
         for (String value : values) {
             if (value != null && !value.isBlank()) {
@@ -711,5 +821,39 @@ public class SnapshotExportService {
             }
         }
         return "";
+    }
+
+    private static final class CaptureContext {
+        private final Consumer<String> progress;
+        private final Set<String> disabledFeatures = new HashSet<>();
+        private final Set<String> disabledAccessors = new HashSet<>();
+        private final Set<String> reportedMessages = new HashSet<>();
+
+        private CaptureContext(Consumer<String> progress) {
+            this.progress = progress;
+        }
+
+        private void disableFeature(String featureName, String message) {
+            if (featureName == null || featureName.isBlank()) {
+                return;
+            }
+            disabledFeatures.add(featureName);
+            reportOnce("feature:" + featureName, message);
+        }
+
+        private void disableAccessor(String accessorKey, String message) {
+            if (accessorKey == null || accessorKey.isBlank()) {
+                return;
+            }
+            disabledAccessors.add(accessorKey);
+            reportOnce("accessor:" + accessorKey, message);
+        }
+
+        private void reportOnce(String key, String message) {
+            if (progress == null || !reportedMessages.add(key)) {
+                return;
+            }
+            progress.accept("[WARN] " + message);
+        }
     }
 }
