@@ -44,10 +44,13 @@ import AccountCircleRoundedIcon from "@mui/icons-material/AccountCircleRounded";
 import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
+import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
 import {
   BranchAccessManifestStatus,
+  CacheElementSearchResponse,
   CacheApiKeyScope,
   CacheApiKeySummary,
+  CachedElementRecord,
   ItemDetailViewMode,
   ItemReference,
   OpenWebUIModelEntry,
@@ -55,6 +58,7 @@ import {
   OSLCExecuteResponse,
   ProjectSummary,
   SessionPreferences,
+  StereotypeElementSearchResponse,
   SwaggerContractManifest,
   SwaggerExecuteResponse,
   SwaggerOperationSpec,
@@ -65,10 +69,11 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "diagram-viewer" | "compare" | "agent" | "developer" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-viewer" | "compare" | "agent" | "developer" | "api";
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
+type ElementSearchMode = "query" | "stereotype";
 
-const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "diagram-viewer", "compare", "agent", "developer", "api"];
+const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
 const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
   standard: "Standard",
@@ -131,6 +136,10 @@ function parseItemDetailViewMode(value: string | null | undefined): ItemDetailVi
     return "standard";
   }
   return value as ItemDetailViewMode;
+}
+
+function parseElementSearchMode(value: string | null | undefined): ElementSearchMode {
+  return value === "stereotype" ? "stereotype" : "query";
 }
 
 function errorMessage(caught: unknown): string {
@@ -223,6 +232,11 @@ function findNodeTrail(nodes: TreeNode[], targetId: string): TreeNode[] {
     return false;
   };
   return walk(nodes) ? [...trail] : [];
+}
+
+function findNodeById(nodes: TreeNode[], targetId: string): TreeNode | null {
+  const trail = findNodeTrail(nodes, targetId);
+  return trail.length ? trail[trail.length - 1] : null;
 }
 
 function resizeHandleStyles() {
@@ -1622,6 +1636,12 @@ export default function WorkspacePage() {
   const [selectedApiTag, setSelectedApiTag] = useState("");
   const [selectedOperationKey, setSelectedOperationKey] = useState("");
   const [apiSearch, setApiSearch] = useState("");
+  const [elementSearchMode, setElementSearchMode] = useState<ElementSearchMode>(() => parseElementSearchMode(searchParams.get("searchMode")));
+  const [elementSearchQuery, setElementSearchQuery] = useState(() => searchParams.get("searchQuery") ?? "");
+  const [elementSearchStereotype, setElementSearchStereotype] = useState(() => searchParams.get("searchStereotype") ?? "");
+  const [elementSearchItemType, setElementSearchItemType] = useState(() => searchParams.get("searchItemType") ?? "");
+  const [elementSearchResponse, setElementSearchResponse] = useState<CacheElementSearchResponse | StereotypeElementSearchResponse | null>(null);
+  const [elementSearchSummary, setElementSearchSummary] = useState("");
   const [apiPathParams, setApiPathParams] = useState<Record<string, string>>({});
   const [apiQueryParams, setApiQueryParams] = useState<Record<string, string>>({});
   const [apiBodyText, setApiBodyText] = useState("");
@@ -1646,9 +1666,10 @@ export default function WorkspacePage() {
   const [agentMessages, setAgentMessages] = useState<WorkbenchAgentChatMessage[]>([]);
   const treeContextKey = `${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
   const treeContextRef = useRef<string>(treeContextKey);
+  const treeNodesRef = useRef<TreeNode[]>([]);
   const [agentSyncKnowledgeBeforeChat, setAgentSyncKnowledgeBeforeChat] = useState(true);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
-  const projectContextActive = tab === "models" || tab === "diagram-viewer" || tab === "compare";
+  const projectContextActive = tab === "models" || tab === "search" || tab === "diagram-viewer" || tab === "compare";
   const treeExpandedStorageKey = `${layoutStoragePrefix}:tree-expanded:${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
   const workspaceOuterPadding = compactUi ? { xs: 1.5, md: 2 } : { xs: 2, md: 3 };
   const panelPadding = compactUi ? 2 : 3;
@@ -1837,6 +1858,10 @@ export default function WorkspacePage() {
     const urlProjectId = searchParams.get("project") ?? "";
     const urlBranchId = searchParams.get("branch") ?? "";
     const urlItemId = searchParams.get("item") ?? "";
+    const urlSearchMode = parseElementSearchMode(searchParams.get("searchMode"));
+    const urlSearchQuery = searchParams.get("searchQuery") ?? "";
+    const urlSearchStereotype = searchParams.get("searchStereotype") ?? "";
+    const urlSearchItemType = searchParams.get("searchItemType") ?? "";
     if (urlTab !== tab) {
       setTab(urlTab);
     }
@@ -1849,7 +1874,19 @@ export default function WorkspacePage() {
     if (urlItemId !== selectedItemId) {
       setSelectedItemId(urlItemId);
     }
-  }, [isAdmin, searchParams]);
+    if (urlSearchMode !== elementSearchMode) {
+      setElementSearchMode(urlSearchMode);
+    }
+    if (urlSearchQuery !== elementSearchQuery) {
+      setElementSearchQuery(urlSearchQuery);
+    }
+    if (urlSearchStereotype !== elementSearchStereotype) {
+      setElementSearchStereotype(urlSearchStereotype);
+    }
+    if (urlSearchItemType !== elementSearchItemType) {
+      setElementSearchItemType(urlSearchItemType);
+    }
+  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, tab]);
 
   useEffect(() => {
     const nextParams = new URLSearchParams(searchParams);
@@ -1874,13 +1911,33 @@ export default function WorkspacePage() {
     } else {
       nextParams.delete("item");
     }
+    if (elementSearchMode !== "query") {
+      nextParams.set("searchMode", elementSearchMode);
+    } else {
+      nextParams.delete("searchMode");
+    }
+    if (elementSearchQuery.trim()) {
+      nextParams.set("searchQuery", elementSearchQuery.trim());
+    } else {
+      nextParams.delete("searchQuery");
+    }
+    if (elementSearchStereotype.trim()) {
+      nextParams.set("searchStereotype", elementSearchStereotype.trim());
+    } else {
+      nextParams.delete("searchStereotype");
+    }
+    if (elementSearchItemType.trim()) {
+      nextParams.set("searchItemType", elementSearchItemType.trim());
+    } else {
+      nextParams.delete("searchItemType");
+    }
     const current = searchParams.toString();
     const next = nextParams.toString();
     if (current !== next) {
       pendingSearchSyncRef.current = next;
       setSearchParams(nextParams, { replace: true });
     }
-  }, [isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
+  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
@@ -1900,21 +1957,30 @@ export default function WorkspacePage() {
     if (treeContextRef.current !== treeContextKey) {
       treeContextRef.current = treeContextKey;
       setTreeNodes(baseTreeNodes);
+      treeNodesRef.current = baseTreeNodes;
       setLoadingTreeNodeIds([]);
       return;
     }
     if (!baseTreeNodes.length) {
       setTreeNodes([]);
+      treeNodesRef.current = [];
       setLoadingTreeNodeIds([]);
       return;
     }
     setTreeNodes((current) => {
       if (!current.length) {
+        treeNodesRef.current = baseTreeNodes;
         return baseTreeNodes;
       }
-      return mergeTreeNodesPreservingLoadedChildren(baseTreeNodes, current);
+      const merged = mergeTreeNodesPreservingLoadedChildren(baseTreeNodes, current);
+      treeNodesRef.current = merged;
+      return merged;
     });
   }, [baseTreeNodes, treeContextKey]);
+
+  useEffect(() => {
+    treeNodesRef.current = treeNodes;
+  }, [treeNodes]);
 
   useEffect(() => {
     setItemDetailViewMode(parseItemDetailViewMode(currentPreferences.item_detail_view_mode));
@@ -2162,6 +2228,11 @@ export default function WorkspacePage() {
     setSelectedSpecificationSection("properties");
   }, [selectedItemId]);
 
+  useEffect(() => {
+    setElementSearchResponse(null);
+    setElementSearchSummary("");
+  }, [selectedProjectId, selectedBranchId]);
+
   const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
   const selectedWorkspaceItemIsDiagram = isDiagramLikeItem(selectedWorkspaceItem);
   const selectedWorkspaceItemDiagramPreviewUrl = selectedWorkspaceItem ? diagramPreviewDataUrl(selectedWorkspaceItem) : null;
@@ -2247,6 +2318,11 @@ export default function WorkspacePage() {
       ? compareRightName
       : "Selected item reference"
     : "";
+  const selectedSearchDetail = useMemo(
+    () => elementSearchResponse?.details.find((detail) => detail.id === selectedItemId) ?? null,
+    [elementSearchResponse, selectedItemId],
+  );
+  const selectedSearchWorkspaceItem = selectedWorkspaceItem ?? selectedSearchDetail;
 
   const logoutMutation = useMutation({
     mutationFn: () => api.logout(csrfToken),
@@ -2286,6 +2362,59 @@ export default function WorkspacePage() {
       ...patch,
     });
   };
+
+  const elementSearchMutation = useMutation({
+    mutationFn: async (mode: ElementSearchMode) => {
+      if (!selectedProjectId || !selectedBranchId) {
+        throw new Error("Select a project and branch before searching stored model data.");
+      }
+      if (mode === "stereotype") {
+        const stereotype = elementSearchStereotype.trim();
+        if (!stereotype) {
+          throw new Error("Enter a stereotype name before running a stereotype search.");
+        }
+        return {
+          mode,
+          response: await api.searchCachedElementsByStereotype({
+            projectId: selectedProjectId,
+            branchId: selectedBranchId,
+            stereotype,
+            includeDetails: true,
+            limit: 500,
+          }),
+        };
+      }
+      const query = elementSearchQuery.trim();
+      if (!query) {
+        throw new Error("Enter an element, package, resource, or ID query before searching.");
+      }
+      return {
+        mode,
+        response: await api.searchCachedElements({
+          projectId: selectedProjectId,
+          branchId: selectedBranchId,
+          q: query,
+          itemType: elementSearchItemType.trim() || undefined,
+          includeDetails: true,
+          limit: 500,
+        }),
+      };
+    },
+    onSuccess: ({ mode, response }) => {
+      setElementSearchMode(mode);
+      setElementSearchResponse(response);
+      const summary =
+        mode === "stereotype"
+          ? `Found ${response.total} stored branch element${response.total === 1 ? "" : "s"} matching stereotype "${elementSearchStereotype.trim()}".`
+          : `Found ${response.total} stored branch element${response.total === 1 ? "" : "s"} for "${elementSearchQuery.trim()}".`;
+      setElementSearchSummary(summary);
+      if (response.items.length) {
+        const nextId = response.items[0].element_id;
+        setSelectedItemId((current) => (current && response.items.some((item) => item.element_id === current) ? current : nextId));
+      }
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
 
   const itemDetailViewModeMutation = useMutation({
     mutationFn: (nextMode: ItemDetailViewMode) =>
@@ -2731,6 +2860,8 @@ export default function WorkspacePage() {
     setSelectedBranchId("");
     setSelectedItemId("");
     setItemDraft(null);
+    setElementSearchResponse(null);
+    setElementSearchSummary("");
   };
 
   const openProjectInModelBrowser = (projectId: string) => {
@@ -2755,11 +2886,45 @@ export default function WorkspacePage() {
     setTab("models");
   };
 
+  const revealElementPathInTree = async (item: ItemDetails | null) => {
+    if (!item || !selectedProjectId || !selectedBranchId) {
+      return;
+    }
+    const rawSegments = item.path
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    const pathIds = [...new Set([...rawSegments, item.id])];
+    if (!pathIds.length) {
+      return;
+    }
+    const nextExpanded = new Set(expandedTreeNodeIds);
+    for (let index = 0; index < pathIds.length - 1; index += 1) {
+      const parentId = pathIds[index];
+      let parentNode = findNodeById(treeNodesRef.current, parentId);
+      if (!parentNode) {
+        break;
+      }
+      nextExpanded.add(parentNode.id);
+      const childrenLoaded = parentNode.children.length > 0 || parentNode.metadata.children_loaded === true;
+      if (!childrenLoaded) {
+        await loadTreeChildren(parentNode);
+        parentNode = findNodeById(treeNodesRef.current, parentId);
+        if (!parentNode) {
+          break;
+        }
+      }
+    }
+    setExpandedTreeNodeIds(Array.from(nextExpanded));
+    setSelectedItemId(item.id);
+    setTab("models");
+  };
+
   const revealSelectedInTree = () => {
     if (!selectedItemId) {
       return;
     }
-    setTab("models");
+    void revealElementPathInTree(selectedSearchWorkspaceItem);
   };
 
   const openDiagramViewer = () => {
@@ -2820,7 +2985,11 @@ export default function WorkspacePage() {
         modelId,
         selectedProject?.workspace_id || undefined,
       );
-      setTreeNodes((current) => replaceNodeChildren(current, node.id, children));
+      setTreeNodes((current) => {
+        const nextTree = replaceNodeChildren(current, node.id, children);
+        treeNodesRef.current = nextTree;
+        return nextTree;
+      });
     } catch (caught) {
       setNotice({ severity: "error", message: errorMessage(caught) });
     } finally {
@@ -3908,6 +4077,211 @@ export default function WorkspacePage() {
             />
           </Box>
         </Paper>
+      </Stack>
+    );
+  };
+
+  const renderElementSearch = () => {
+    const resultItems: CachedElementRecord[] = elementSearchResponse?.items ?? [];
+    const activeSearchItem = selectedSearchWorkspaceItem;
+    const currentSearchMode = elementSearchMode;
+
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Element Search</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Search the stored branch snapshot by element id, package path, resource name, element name, or applied stereotype, then inspect the full specification window without leaving Workbench.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              onClick={() => {
+                setElementSearchQuery("");
+                setElementSearchStereotype("");
+                setElementSearchItemType("");
+                setElementSearchResponse(null);
+                setElementSearchSummary("");
+              }}
+            >
+              Clear Search
+            </Button>
+            <Button variant="outlined" onClick={() => setTab("models")} disabled={!selectedProjectId || !selectedBranchId}>
+              Open Model Browser
+            </Button>
+          </Stack>
+        </Stack>
+        {!selectedProject ? (
+          <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+            <Typography variant="h5">Select a project</Typography>
+            <Typography color="text.secondary" sx={{ mt: 1 }}>
+              Choose a published project snapshot first, then search its stored branch elements here.
+            </Typography>
+          </Paper>
+        ) : null}
+        {selectedProject && !selectedBranchId ? (
+          <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+            <Typography variant="h5">Select a branch</Typography>
+            <Typography color="text.secondary" sx={{ mt: 1 }}>
+              Element Search stays scoped to one stored branch at a time so paths, tree locations, and specifications remain exact.
+            </Typography>
+          </Paper>
+        ) : null}
+        {selectedProject && selectedBranchId ? (
+          <>
+            <Paper sx={{ p: 3, borderRadius: 2 }}>
+              <Grid container spacing={2}>
+                <Grid item xs={12} lg={7}>
+                  <Stack spacing={1.5}>
+                    <TextField
+                      label="Search by ID, package, resource, or element"
+                      value={elementSearchQuery}
+                      onChange={(event) => setElementSearchQuery(event.target.value)}
+                      helperText="Examples: full element id, qualified path text, package name, diagram name, or model resource text."
+                      fullWidth
+                    />
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+                      <TextField
+                        label="Optional item type filter"
+                        value={elementSearchItemType}
+                        onChange={(event) => setElementSearchItemType(event.target.value)}
+                        helperText="Examples: package, diagram, model, class, element"
+                        fullWidth
+                      />
+                      <Button
+                        variant="contained"
+                        sx={{ minWidth: { md: 180 } }}
+                        disabled={elementSearchMutation.isPending}
+                        onClick={() => elementSearchMutation.mutate("query")}
+                      >
+                        Search Stored Branch
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Grid>
+                <Grid item xs={12} lg={5}>
+                  <Stack spacing={1.5}>
+                    <TextField
+                      label="Search all elements by stereotype"
+                      value={elementSearchStereotype}
+                      onChange={(event) => setElementSearchStereotype(event.target.value)}
+                      helperText="Use the applied stereotype name exactly as it appears in the model."
+                      fullWidth
+                    />
+                    <Button
+                      variant="outlined"
+                      disabled={elementSearchMutation.isPending}
+                      onClick={() => elementSearchMutation.mutate("stereotype")}
+                    >
+                      Search by Stereotype
+                    </Button>
+                  </Stack>
+                </Grid>
+              </Grid>
+            </Paper>
+            {elementSearchMutation.isPending ? <CircularProgress size={28} /> : null}
+            {elementSearchSummary ? <Alert severity="success">{elementSearchSummary}</Alert> : null}
+            {elementSearchResponse ? (
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    xl: "minmax(320px, 0.9fr) minmax(0, 1.6fr)",
+                  },
+                  gap: 2,
+                  minWidth: 0,
+                  alignItems: "start",
+                }}
+              >
+                <Paper sx={{ p: 2, borderRadius: 2, minWidth: 0 }}>
+                  <Stack spacing={1.5}>
+                    <Stack spacing={0.5}>
+                      <Typography variant="overline" color="text.secondary">
+                        Search Results
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {currentSearchMode === "stereotype"
+                          ? `Stereotype "${elementSearchStereotype.trim()}"`
+                          : `Query "${elementSearchQuery.trim()}"`}
+                      </Typography>
+                    </Stack>
+                    {resultItems.length ? (
+                      <List dense disablePadding sx={{ maxHeight: viewportPanelMaxHeight, overflow: "auto" }}>
+                        {resultItems.map((item) => {
+                          const selected = item.element_id === selectedItemId;
+                          return (
+                            <ListItemButton
+                              key={item.element_id}
+                              selected={selected}
+                              onClick={() => setSelectedItemId(item.element_id)}
+                              sx={{ borderRadius: 1.5, mb: 0.75, alignItems: "flex-start" }}
+                            >
+                              <ListItemText
+                                primary={item.name || item.element_id}
+                                secondary={
+                                  <Stack spacing={0.6} sx={{ mt: 0.5 }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      {friendlyPath(item.path, referenceNameById) || item.path || item.element_id}
+                                    </Typography>
+                                    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                                      <Chip label={humanizeFieldLabel(item.item_type)} size="small" variant="outlined" />
+                                      <Chip label={`${item.child_count} child${item.child_count === 1 ? "" : "ren"}`} size="small" variant="outlined" />
+                                    </Stack>
+                                  </Stack>
+                                }
+                              />
+                            </ListItemButton>
+                          );
+                        })}
+                      </List>
+                    ) : (
+                      <Typography color="text.secondary">No stored branch elements matched this search.</Typography>
+                    )}
+                  </Stack>
+                </Paper>
+                <Box sx={{ minWidth: 0 }}>
+                  {activeSearchItem ? (
+                    <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
+                      {renderSpecificationWorkspace(activeSearchItem, {
+                        mode: "browser",
+                        editable: Boolean(activeSearchItem.editable && canEdit),
+                        extraHeader: (
+                          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                            <Button size="small" variant="outlined" onClick={() => void revealElementPathInTree(activeSearchItem)}>
+                              Open in Model Browser
+                            </Button>
+                            <Button size="small" onClick={() => pickCompareSide("left", activeSearchItem.id)}>
+                              Compare Left
+                            </Button>
+                            <Button size="small" onClick={() => pickCompareSide("right", activeSearchItem.id)}>
+                              Compare Right
+                            </Button>
+                            {isDiagramLikeItem(activeSearchItem) && diagramPreviewDataUrl(activeSearchItem) ? (
+                              <Button size="small" variant="contained" onClick={openDiagramViewer}>
+                                View Diagram
+                              </Button>
+                            ) : null}
+                          </Stack>
+                        ),
+                      })}
+                    </Paper>
+                  ) : (
+                    <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+                      <Typography variant="h6">Select a search result</Typography>
+                      <Typography color="text.secondary" sx={{ mt: 1 }}>
+                        Pick any matched element on the left to open its full stored specification data and exact tree path here.
+                      </Typography>
+                    </Paper>
+                  )}
+                </Box>
+              </Box>
+            ) : null}
+          </>
+        ) : null}
       </Stack>
     );
   };
@@ -5058,9 +5432,7 @@ export default function WorkspacePage() {
       <AppBar position="sticky" color="default" elevation={1}>
         <Toolbar sx={{ gap: compactUi ? 1.25 : 2 }}>
           <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-            <Typography variant="h6" noWrap sx={{ lineHeight: 1.1 }}>
-              TWC Workbench
-            </Typography>
+            <WorkbenchBrandMark size={34} titleVariant="h6" />
           </Box>
           {session?.capabilities ? <CapabilityBadges capabilities={session.capabilities.capabilities} /> : null}
           <Tooltip title="Refresh capabilities">
@@ -5263,6 +5635,7 @@ export default function WorkspacePage() {
                   <MenuItem key="dashboard" selected={tab === "dashboard"} onClick={() => { setTab("dashboard"); closeWorkspaceMenu(); }}>Dashboard</MenuItem>,
                   <MenuItem key="projects" selected={tab === "projects"} onClick={() => { setTab("projects"); closeWorkspaceMenu(); }}>Project Browser</MenuItem>,
                   <MenuItem key="models" selected={tab === "models"} onClick={() => { setTab("models"); closeWorkspaceMenu(); }}>Model Browser</MenuItem>,
+                  <MenuItem key="search" selected={tab === "search"} onClick={() => { setTab("search"); closeWorkspaceMenu(); }}>Element Search</MenuItem>,
                   <MenuItem key="compare" selected={tab === "compare"} onClick={() => { setTab("compare"); closeWorkspaceMenu(); }}>Compare</MenuItem>,
                   <MenuItem key="agent" selected={tab === "agent"} onClick={() => { setTab("agent"); closeWorkspaceMenu(); }}>Workbench Agent</MenuItem>,
                 ]
@@ -5310,6 +5683,7 @@ export default function WorkspacePage() {
             {tab === "dashboard" ? renderDashboard() : null}
             {tab === "projects" ? renderProjects() : null}
             {tab === "models" ? renderModels() : null}
+            {tab === "search" ? renderElementSearch() : null}
             {tab === "diagram-viewer" ? renderDiagramViewer() : null}
             {tab === "compare" ? renderCompare() : null}
             {tab === "agent" ? renderWorkbenchAgent() : null}

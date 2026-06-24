@@ -24,6 +24,7 @@ import PublicRoundedIcon from "@mui/icons-material/PublicRounded";
 import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 import VerifiedUserRoundedIcon from "@mui/icons-material/VerifiedUserRounded";
 
+import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
 import { ServerHealth, TokenLoginRequest } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
@@ -131,19 +132,15 @@ export default function LandingPage() {
                   }}
                 />
                 <Box>
+                  <WorkbenchBrandMark
+                    size={58}
+                    titleVariant="h4"
+                    titleColor="#f8fbff"
+                    subtitle="Secure Enterprise Workbench for teamwork cloud repository browsing,item details and compact work flows"
+                    subtitleColor="rgba(244, 249, 255, 0.9)"
+                  />
                   <Typography
-                    variant="h1"
-                    sx={{
-                      fontSize: { xs: "2.5rem", md: "4rem" },
-                      lineHeight: 1.05,
-                      letterSpacing: 0,
-                      maxWidth: 920,
-                    }}
-                  >
-                    TWC WorkBench
-                  </Typography>
-                  <Typography
-                    variant="h6"
+                    variant="body1"
                     sx={{
                       mt: 2,
                       maxWidth: 940,
@@ -152,7 +149,7 @@ export default function LandingPage() {
                       fontSize: { xs: "1rem", md: "1.15rem" },
                     }}
                   >
-                    Secure Enterprise Workbench for teamwork cloud repository browsing,item details and compact work flows
+                    This workbench is configured around a Teamwork Cloud 2022x deployment, keeping sign-in, repository browsing, item details, and compare workflows aligned to the active 2022x contract.
                   </Typography>
                 </Box>
                 <Button

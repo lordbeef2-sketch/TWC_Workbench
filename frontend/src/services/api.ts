@@ -1,10 +1,12 @@
 import {
   AuthOptions,
   BranchAccessManifestStatus,
+  CacheElementSearchResponse,
   CacheApiKeyCreateRequest,
   CacheApiKeyCreateResponse,
   CacheApiKeySummary,
   CacheApiManifest,
+  StereotypeElementSearchResponse,
   CacheServerEntry,
   CacheIngestTokenRequest,
   BranchSummary,
@@ -379,6 +381,76 @@ export const api = {
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<ItemDetails>(`/workspace/items/${itemId}${suffix}`);
+  },
+  searchCachedElements(
+    payload: {
+      projectId: string;
+      branchId: string;
+      q?: string;
+      itemType?: string;
+      metaclass?: string;
+      stereotype?: string;
+      ownerId?: string;
+      includeDetails?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+  ) {
+    const params = new URLSearchParams({
+      projectId: payload.projectId,
+      branchId: payload.branchId,
+    });
+    if (payload.q) {
+      params.set("q", payload.q);
+    }
+    if (payload.itemType) {
+      params.set("itemType", payload.itemType);
+    }
+    if (payload.metaclass) {
+      params.set("metaclass", payload.metaclass);
+    }
+    if (payload.stereotype) {
+      params.set("stereotype", payload.stereotype);
+    }
+    if (payload.ownerId) {
+      params.set("ownerId", payload.ownerId);
+    }
+    if (typeof payload.includeDetails === "boolean") {
+      params.set("includeDetails", String(payload.includeDetails));
+    }
+    if (typeof payload.limit === "number") {
+      params.set("limit", String(payload.limit));
+    }
+    if (typeof payload.offset === "number") {
+      params.set("offset", String(payload.offset));
+    }
+    return request<CacheElementSearchResponse>(`/workspace/model-cache/elements/search?${params.toString()}`);
+  },
+  searchCachedElementsByStereotype(
+    payload: {
+      projectId: string;
+      branchId: string;
+      stereotype: string;
+      includeDetails?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+  ) {
+    const params = new URLSearchParams({
+      projectId: payload.projectId,
+      branchId: payload.branchId,
+      stereotype: payload.stereotype,
+    });
+    if (typeof payload.includeDetails === "boolean") {
+      params.set("includeDetails", String(payload.includeDetails));
+    }
+    if (typeof payload.limit === "number") {
+      params.set("limit", String(payload.limit));
+    }
+    if (typeof payload.offset === "number") {
+      params.set("offset", String(payload.offset));
+    }
+    return request<StereotypeElementSearchResponse>(`/workspace/model-cache/elements/by-stereotype?${params.toString()}`);
   },
   updateItem(itemId: string, payload: Partial<ItemDetails>, csrfToken: string, projectId?: string, branchId?: string) {
     const params = new URLSearchParams();

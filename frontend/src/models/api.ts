@@ -175,6 +175,45 @@ export interface ItemDetails {
   source_payload: Record<string, unknown>;
 }
 
+export interface CachedElementRecord {
+  server_id: string;
+  project_id: string;
+  branch_id: string;
+  model_id: string;
+  element_id: string;
+  workspace_id?: string | null;
+  latest_revision?: string | null;
+  name: string;
+  item_type: string;
+  path: string;
+  child_count: number;
+  payload: Record<string, unknown>;
+  source_user?: string | null;
+  synced_at: string;
+}
+
+export interface CacheElementSearchResponse {
+  query: string;
+  item_type?: string | null;
+  metaclass?: string | null;
+  stereotype?: string | null;
+  owner_id?: string | null;
+  include_details: boolean;
+  total: number;
+  items: CachedElementRecord[];
+  details: ItemDetails[];
+}
+
+export interface StereotypeElementSearchResponse {
+  stereotype: string;
+  include_details: boolean;
+  total: number;
+  matched_stereotype_ids: string[];
+  matched_stereotype_names: string[];
+  items: CachedElementRecord[];
+  details: ItemDetails[];
+}
+
 export interface ElementDiscoveryEntry {
   id: string;
   name: string;
