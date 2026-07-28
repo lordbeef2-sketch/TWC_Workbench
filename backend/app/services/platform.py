@@ -1013,7 +1013,7 @@ class PlatformService:
             session.server.id,
             PROJECT_LIST_CACHE_KEY,
         )
-        logger.info("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
+        logger.debug("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
         return projects
 
     async def list_project_branches(self, session: SessionData, project_id: str, workspace_id: str | None = None, refresh: bool = False):
@@ -1030,7 +1030,7 @@ class PlatformService:
             cache_key,
             [json.loads(branch.model_dump_json()) for branch in branches],
         )
-        logger.info(
+        logger.debug(
             "twc-branch-list-ui",
             user=session.user.preferred_username,
             server_id=session.server.id,
