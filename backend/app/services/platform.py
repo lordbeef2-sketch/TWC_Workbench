@@ -117,6 +117,8 @@ from app.models.domain import (
     WorkbenchGroupSummary,
     WorkbenchGroupUpdateRequest,
     WorkbenchLocalLoginRequest,
+    WorkbenchProjectAccessAssignmentRequest,
+    WorkbenchProjectAccessAssignmentResponse,
     WorkbenchUserCreateRequest,
     WorkbenchUserRecord,
     WorkbenchUserRole,
@@ -225,6 +227,9 @@ class PlatformService:
         return session.authorization_context.can_manage_server_presets
 
     def _has_workbench_admin_model_visibility(self, session: SessionData) -> bool:
+        # Workbench admins need to see every cached/imported model so they can
+        # assign Workbench-side access. This is catalog visibility only; edit
+        # rights still come from the user's actual branch/model permissions.
         authorization_context = getattr(session, "authorization_context", None)
         return bool(getattr(authorization_context, "can_manage_server_presets", False))
 
@@ -446,6 +451,94 @@ class PlatformService:
         if not session.authorization_context.can_manage_server_presets:
             raise PermissionError("Only Workbench administrators can delete groups.")
         return self.repo.delete_workbench_group(self._normalize_workbench_group_name(name))
+
+    def assign_workbench_project_access(
+        self,
+        session: SessionData,
+        payload: WorkbenchProjectAccessAssignmentRequest,
+    ) -> WorkbenchProjectAccessAssignmentResponse:
+        if not session.authorization_context.can_manage_server_presets:
+            raise PermissionError("Only Workbench administrators can assign project access.")
+        project_id = payload.project_id.strip()
+        if not project_id:
+            raise ValueError("Project is required.")
+        principal_name = payload.principal_name.strip()
+        if not principal_name:
+            raise ValueError("User or group is required.")
+
+        if payload.principal_type == "user":
+            username = self._normalize_workbench_username(principal_name)
+            user = self.repo.get_workbench_user(username)
+            if user is None:
+                raise ValueError(f"Workbench user not found: {username}")
+            usernames = [username]
+            normalized_principal = username
+        else:
+            group_name = self._normalize_workbench_group_name(principal_name)
+            group = self.repo.get_workbench_group(group_name)
+            if group is None:
+                raise ValueError(f"Workbench group not found: {group_name}")
+            if not group.enabled:
+                raise ValueError(f"Workbench group is disabled: {group_name}")
+            usernames = [user for user in group.users if self.repo.get_workbench_user(user)]
+            if not usernames:
+                raise ValueError(f"Workbench group has no valid users: {group_name}")
+            normalized_principal = group_name
+
+        summaries = [
+            summary
+            for summary in self.repo.list_branch_cache_summaries(session.server.id)
+            if summary.project_id == project_id and self._is_plugin_managed_summary(summary)
+        ]
+        if payload.branch_id:
+            branch_id = payload.branch_id.strip()
+            summaries = [summary for summary in summaries if summary.branch_id == branch_id]
+        if not summaries:
+            raise ValueError("No plugin-imported Workbench branch matches this project/branch selection.")
+
+        now = utcnow()
+        records: list[BranchAccessRecord] = []
+        via_groups = [normalized_principal] if payload.principal_type == "group" else []
+        for username in usernames:
+            for summary in summaries:
+                records.append(
+                    BranchAccessRecord(
+                        user_id=self._user_key(username),
+                        server_id=session.server.id,
+                        project_id=summary.project_id,
+                        branch_id=summary.branch_id,
+                        workspace_id=summary.workspace_id,
+                        branch_name=summary.branch_name or summary.branch_id,
+                        latest_revision=summary.latest_revision,
+                        accessible=payload.accessible,
+                        editable=bool(payload.accessible and payload.editable),
+                        admin_access=bool(payload.accessible and payload.admin_access),
+                        roles=["Workbench Admin Assignment"],
+                        via_groups=via_groups,
+                        source="workbench-admin-assignment",
+                        payload={
+                            "assigned_by": session.user.preferred_username,
+                            "principal_type": payload.principal_type,
+                            "principal_name": normalized_principal,
+                            "workbench_assignment": True,
+                            "branch_admin_access": bool(payload.accessible and payload.admin_access),
+                            "access_admin_access": bool(payload.accessible and payload.admin_access),
+                        },
+                        updated_at=now,
+                    )
+                )
+        self.repo.upsert_branch_access_records(records)
+        return WorkbenchProjectAccessAssignmentResponse(
+            principal_type=payload.principal_type,
+            principal_name=normalized_principal,
+            project_id=project_id,
+            branch_ids=sorted({record.branch_id for record in records}),
+            assigned_usernames=sorted({record.user_id for record in records}),
+            accessible=payload.accessible,
+            editable=bool(payload.accessible and payload.editable),
+            admin_access=bool(payload.accessible and payload.admin_access),
+            message=f"Updated Workbench project access for {len(usernames)} user(s) across {len(summaries)} branch(es).",
+        )
 
     def _require_workbench_group_write(self, session: SessionData, group: WorkbenchGroupRecord) -> None:
         if session.authorization_context.can_manage_server_presets:
@@ -1798,6 +1891,9 @@ class PlatformService:
         projects: dict[str, CacheProjectEntry] = {}
         for summary in self.repo.list_branch_cache_summaries(server_id):
             if include_all_workbench_admin:
+                # Admin catalog mode intentionally bypasses per-user branch
+                # access filtering so admins can discover projects that need
+                # permission setup. It does not mint branch access records.
                 visible_model_count = summary.model_count
                 visible_element_count = summary.element_count
             elif self._is_plugin_managed_summary(summary):
@@ -2218,6 +2314,8 @@ class PlatformService:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         branch_total = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
         if include_all_workbench_admin:
+            # Read-only admin catalog path: return the full cached branch
+            # contents for browsing/searching permission targets.
             return self.repo.list_cached_elements(
                 server_id,
                 project_id,
@@ -2658,6 +2756,9 @@ class PlatformService:
         user_id = self._user_key(preferred_username)
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if include_all_workbench_admin:
+            # Admin catalog mode may resolve any cached element by id, but the
+            # caller must still treat resulting details as non-editable unless
+            # normal permission checks later say otherwise.
             if model_id is not None:
                 return self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model_id)
             for model in self.repo.list_cached_models(server_id, project_id, branch_id):
@@ -3342,6 +3443,8 @@ class PlatformService:
             if cached_model is None:
                 return None
             if admin_model_visibility:
+                # A Workbench admin can inspect catalog details for setup, but
+                # catalog visibility alone must not enable branch/model edits.
                 editable = False
             elif self._is_plugin_managed_summary(summary):
                 if branch_access is None or not branch_access.accessible:
@@ -5422,6 +5525,7 @@ class PlatformService:
     ) -> list[CachedModelRecord]:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if include_all_workbench_admin:
+            # Full model inventory for admin permission-management screens.
             return self.repo.list_cached_models(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(

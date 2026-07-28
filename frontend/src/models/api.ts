@@ -478,6 +478,28 @@ export interface WorkbenchGroupUpdateRequest {
   enabled?: boolean | null;
 }
 
+export interface WorkbenchProjectAccessAssignmentRequest {
+  principal_type: "user" | "group";
+  principal_name: string;
+  project_id: string;
+  branch_id?: string | null;
+  accessible: boolean;
+  editable: boolean;
+  admin_access: boolean;
+}
+
+export interface WorkbenchProjectAccessAssignmentResponse {
+  principal_type: "user" | "group";
+  principal_name: string;
+  project_id: string;
+  branch_ids: string[];
+  assigned_usernames: string[];
+  accessible: boolean;
+  editable: boolean;
+  admin_access: boolean;
+  message: string;
+}
+
 export interface OSLCRootServicesSummary {
   rootservices_url: string;
   service_provider_catalog_url?: string | null;

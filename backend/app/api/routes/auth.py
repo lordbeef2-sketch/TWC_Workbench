@@ -23,6 +23,7 @@ from app.models.domain import (
     WorkbenchGroupCreateRequest,
     WorkbenchGroupUpdateRequest,
     WorkbenchLocalLoginRequest,
+    WorkbenchProjectAccessAssignmentRequest,
     WorkbenchUserCreateRequest,
     WorkbenchUserUpdateRequest,
 )
@@ -701,6 +702,20 @@ def delete_workbench_group(
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return {"ok": True}
+
+
+@router.post("/management/project-access")
+def assign_workbench_project_access(
+    payload: WorkbenchProjectAccessAssignmentRequest,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.assign_workbench_project_access(session, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.post("/logout")

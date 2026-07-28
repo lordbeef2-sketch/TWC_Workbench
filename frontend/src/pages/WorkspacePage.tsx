@@ -24,6 +24,8 @@ import {
   MenuItem,
   Paper,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -43,7 +45,6 @@ import AccountCircleRoundedIcon from "@mui/icons-material/AccountCircleRounded";
 
 import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
-import SettingsDialog from "../components/SettingsDialog";
 import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
 import {
   BranchAccessManifestStatus,
@@ -66,17 +67,19 @@ import {
   TreeNode,
   WorkbenchAgentChatMessage,
   WorkbenchGroupSummary,
+  WorkbenchProjectAccessAssignmentRequest,
   WorkbenchUserRole,
   WorkbenchUserSummary,
 } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-viewer" | "compare" | "agent" | "developer" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-viewer" | "compare" | "agent" | "developer" | "api" | "settings";
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
+type SettingsSubtab = "users" | "groups" | "auth" | "api-keys" | "network" | "agentic";
 
-const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api"];
+const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
 const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
   standard: "Standard",
@@ -1619,7 +1622,8 @@ export default function WorkspacePage() {
   };
 
   const [tab, setTab] = useState<WorkspaceTab>(() => parseWorkspaceTab(searchParams.get("tab")));
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("users");
+  const settingsTabActive = tab === "settings";
   const [selectedProjectId, setSelectedProjectId] = useState(() => searchParams.get("project") ?? "");
   const [selectedBranchId, setSelectedBranchId] = useState(() => searchParams.get("branch") ?? "");
   const [treeFilter, setTreeFilter] = useState("");
@@ -1675,6 +1679,15 @@ export default function WorkspacePage() {
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupDescription, setNewGroupDescription] = useState("");
   const [newGroupUsers, setNewGroupUsers] = useState("");
+  const [workbenchAccessAssignment, setWorkbenchAccessAssignment] = useState<WorkbenchProjectAccessAssignmentRequest>({
+    principal_type: "user",
+    principal_name: "",
+    project_id: "",
+    branch_id: null,
+    accessible: true,
+    editable: false,
+    admin_access: false,
+  });
   const [agentBaseUrlDraft, setAgentBaseUrlDraft] = useState("");
   const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
   const [agentSelectedModelId, setAgentSelectedModelId] = useState("");
@@ -2262,10 +2275,16 @@ export default function WorkspacePage() {
   }, [queryClient, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!isAdmin && tab === "api") {
+    if (!isAdmin && (tab === "api" || tab === "developer")) {
+      setTab(canManageGroups ? "settings" : "dashboard");
+    }
+    if (!canManageGroups && tab === "settings") {
       setTab("dashboard");
     }
-  }, [isAdmin, tab]);
+    if (!isAdmin && settingsSubtab !== "users" && settingsSubtab !== "groups") {
+      setSettingsSubtab("users");
+    }
+  }, [canManageGroups, isAdmin, settingsSubtab, tab]);
 
   const itemQuery = useQuery({
     queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
@@ -2835,6 +2854,20 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["auth-management-groups", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "Workbench group deleted." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const assignWorkbenchProjectAccessMutation = useMutation({
+    mutationFn: (payload: WorkbenchProjectAccessAssignmentRequest) => api.assignWorkbenchProjectAccess(payload, csrfToken),
+    onSuccess: async (response) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["auth-management-users", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["auth-management-groups", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-branches", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: response.message });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -4671,6 +4704,176 @@ export default function WorkspacePage() {
     </Paper>
   );
 
+  const renderWorkbenchProjectAccessAssignment = () => (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Project Access Assignments</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Assign imported Workbench project/branch visibility to local users or to the current members of a group. This is a Workbench access overlay and does not rewrite Teamwork Cloud permissions.
+            </Typography>
+          </Box>
+          <Chip label={`${projects.length} imported projects`} variant="outlined" />
+        </Stack>
+        <Alert severity="info">
+          Workbench administrators can already see every plugin-imported project in the Workbench catalog. Use this panel to grant or revoke what non-admin users can see after login.
+        </Alert>
+        <Grid container spacing={1.5} alignItems="center">
+          <Grid item xs={12} md={2}>
+            <TextField
+              select
+              label="Assign to"
+              value={workbenchAccessAssignment.principal_type}
+              onChange={(event) =>
+                setWorkbenchAccessAssignment((current) => ({
+                  ...current,
+                  principal_type: event.target.value as "user" | "group",
+                  principal_name: "",
+                }))
+              }
+              fullWidth
+            >
+              <MenuItem value="user">User</MenuItem>
+              <MenuItem value="group">Group</MenuItem>
+            </TextField>
+          </Grid>
+          <Grid item xs={12} md={3}>
+            <TextField
+              select
+              label={workbenchAccessAssignment.principal_type === "group" ? "Group" : "User"}
+              value={workbenchAccessAssignment.principal_name}
+              onChange={(event) =>
+                setWorkbenchAccessAssignment((current) => ({
+                  ...current,
+                  principal_name: event.target.value,
+                }))
+              }
+              fullWidth
+            >
+              {workbenchAccessAssignment.principal_type === "group"
+                ? workbenchGroups.filter((group) => group.enabled).map((group) => (
+                    <MenuItem key={group.name} value={group.name}>
+                      {group.name} ({group.users.length} users)
+                    </MenuItem>
+                  ))
+                : workbenchUsers.filter((user) => user.enabled).map((user) => (
+                    <MenuItem key={user.username} value={user.username}>
+                      {user.display_name || user.username}
+                    </MenuItem>
+                  ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} md={3}>
+            <TextField
+              select
+              label="Project"
+              value={workbenchAccessAssignment.project_id}
+              onChange={(event) =>
+                setWorkbenchAccessAssignment((current) => ({
+                  ...current,
+                  project_id: event.target.value,
+                  branch_id: null,
+                }))
+              }
+              fullWidth
+            >
+              {projects.map((project) => (
+                <MenuItem key={project.id} value={project.id}>
+                  {project.name}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} md={4}>
+            <TextField
+              select
+              label="Branch"
+              value={workbenchAccessAssignment.branch_id ?? ""}
+              onChange={(event) =>
+                setWorkbenchAccessAssignment((current) => ({
+                  ...current,
+                  branch_id: event.target.value || null,
+                }))
+              }
+              fullWidth
+              disabled={!workbenchAccessAssignment.project_id}
+              helperText="Leave as all branches to apply access to every imported branch for the selected project."
+            >
+              <MenuItem value="">All imported branches</MenuItem>
+              {projects
+                .find((project) => project.id === workbenchAccessAssignment.project_id)
+                ?.branches.map((branch) => (
+                  <MenuItem key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </MenuItem>
+                ))}
+            </TextField>
+          </Grid>
+        </Grid>
+        <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap">
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={workbenchAccessAssignment.accessible}
+                onChange={(event) =>
+                  setWorkbenchAccessAssignment((current) => ({
+                    ...current,
+                    accessible: event.target.checked,
+                  }))
+                }
+              />
+            }
+            label="Visible"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={workbenchAccessAssignment.editable}
+                onChange={(event) =>
+                  setWorkbenchAccessAssignment((current) => ({
+                    ...current,
+                    editable: event.target.checked,
+                    accessible: current.accessible || event.target.checked,
+                  }))
+                }
+              />
+            }
+            label="Editable"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={workbenchAccessAssignment.admin_access}
+                onChange={(event) =>
+                  setWorkbenchAccessAssignment((current) => ({
+                    ...current,
+                    admin_access: event.target.checked,
+                    editable: current.editable || event.target.checked,
+                    accessible: current.accessible || event.target.checked,
+                  }))
+                }
+              />
+            }
+            label="Access admin"
+          />
+        </Stack>
+        <Button
+          variant="contained"
+          disabled={
+            !csrfToken ||
+            !workbenchAccessAssignment.principal_name ||
+            !workbenchAccessAssignment.project_id ||
+            assignWorkbenchProjectAccessMutation.isPending
+          }
+          onClick={() => assignWorkbenchProjectAccessMutation.mutate(workbenchAccessAssignment)}
+        >
+          Apply Project Access
+        </Button>
+      </Stack>
+    </Paper>
+  );
+
   const renderWorkbenchGroups = () => (
     <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
       <Stack spacing={2}>
@@ -5269,45 +5472,48 @@ export default function WorkspacePage() {
     );
   };
 
-  const renderAdminSettings = () => (
-    <Stack spacing={2}>
-      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-        <Stack spacing={1.5}>
-          <Typography variant="h5">Authentication</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Choose whether this 2022x Workbench uses local Workbench users or TWC-managed users. Only one authority should be active at a time.
-          </Typography>
-          {authManagementStatusQuery.isLoading ? <CircularProgress size={28} /> : null}
-          {authManagementStatusQuery.error ? <Alert severity="error">{errorMessage(authManagementStatusQuery.error)}</Alert> : null}
-          {authManagementStatus ? (
-            <Stack spacing={1.5}>
-              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                <Chip label={`Settings mode: ${authManagementStatus.settings.user_management_mode === "local" ? "local users" : "TWC users"}`} color="success" variant="outlined" />
-                <Chip label={`${authManagementStatus.local_user_count} local users`} variant="outlined" />
-              </Stack>
-              <Alert severity="info">
-                Local mode enables Workbench username/password users and disables TWC token/browser sign-in. TWC mode disables local users and keeps selected TWC sign-in methods available.
-              </Alert>
-              <TextField
-                select
-                label="Authentication authority"
-                value={authManagementStatus.settings.user_management_mode}
-                onChange={(event) =>
-                  void api
-                    .updateAuthManagementSettings({ user_management_mode: event.target.value as "local" | "twc" }, csrfToken)
-                    .then(() => queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }))
-                    .catch((caught) => setNotice({ severity: "error", message: errorMessage(caught) }))
-                }
-                fullWidth
-                disabled={!csrfToken}
-              >
-                <MenuItem value="local">Workbench local users</MenuItem>
-                <MenuItem value="twc">Teamwork Cloud users</MenuItem>
-              </TextField>
+  const renderAuthenticationSettings = () => (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Stack spacing={1.5}>
+        <Typography variant="h5">Authentication Type & Settings</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Choose whether this 2022x Workbench uses local Workbench users or TWC-managed users. Only one authority should be active at a time.
+        </Typography>
+        {authManagementStatusQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {authManagementStatusQuery.error ? <Alert severity="error">{errorMessage(authManagementStatusQuery.error)}</Alert> : null}
+        {authManagementStatus ? (
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={`Settings mode: ${authManagementStatus.settings.user_management_mode === "local" ? "local users" : "TWC users"}`} color="success" variant="outlined" />
+              <Chip label={`${authManagementStatus.local_user_count} local users`} variant="outlined" />
             </Stack>
-          ) : null}
-        </Stack>
-      </Paper>
+            <Alert severity="info">
+              Local mode enables Workbench username/password users and disables TWC token/browser sign-in. TWC mode disables local users and keeps selected TWC sign-in methods available.
+            </Alert>
+            <TextField
+              select
+              label="Authentication mode"
+              value={authManagementStatus.settings.user_management_mode}
+              onChange={(event) =>
+                void api
+                  .updateAuthManagementSettings({ user_management_mode: event.target.value as "local" | "twc" }, csrfToken)
+                  .then(() => queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }))
+                  .catch((caught) => setNotice({ severity: "error", message: errorMessage(caught) }))
+              }
+              fullWidth
+              disabled={!csrfToken}
+            >
+              <MenuItem value="local">Workbench local users</MenuItem>
+              <MenuItem value="twc">Teamwork Cloud users</MenuItem>
+            </TextField>
+          </Stack>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+
+  const renderNetworkSettings = () => (
+    <Stack spacing={2}>
       {renderCacheIngestToken()}
       {renderOslc()}
     </Stack>
@@ -5607,12 +5813,83 @@ export default function WorkspacePage() {
     </Stack>
   );
 
-  const renderSettingsExtras = () => (
+  const renderSettingsPage = () => (
     <Stack spacing={2}>
-      {canManageGroups ? renderWorkbenchUsers() : null}
-      {canManageGroups ? renderWorkbenchGroups() : null}
-      {isAdmin ? renderCacheApiKeys() : null}
-      {isAdmin ? renderAdminSettings() : null}
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h5">Workbench Settings</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Organized admin settings for 2022x Workbench. Workspace project/branch context is hidden here so setup work stays focused.
+            </Typography>
+          </Box>
+          <Tabs
+            value={settingsSubtab}
+            onChange={(_event: SyntheticEvent, value: SettingsSubtab) => setSettingsSubtab(value)}
+            variant="scrollable"
+            scrollButtons="auto"
+            aria-label="Workbench settings sections"
+          >
+            {canManageGroups ? <Tab value="users" label="Users" /> : null}
+            {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
+            {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
+            {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
+            {isAdmin ? <Tab value="network" label="Network Settings" /> : null}
+            {isAdmin ? <Tab value="agentic" label="Agentic Settings" /> : null}
+          </Tabs>
+        </Stack>
+      </Paper>
+
+      {settingsSubtab === "users" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchProjectAccessAssignment() : null}
+          {canManageGroups ? renderWorkbenchUsers() : (
+            <Alert severity="info">User management is available to Workbench administrators and group managers.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "groups" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchProjectAccessAssignment() : null}
+          {canManageGroups ? renderWorkbenchGroups() : (
+            <Alert severity="info">Group management is available to Workbench administrators and group managers.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "auth" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderAuthenticationSettings() : (
+            <Alert severity="info">Authentication settings are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "api-keys" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderCacheApiKeys() : (
+            <Alert severity="info">API access keys are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "network" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderNetworkSettings() : (
+            <Alert severity="info">Network settings are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "agentic" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchAgent() : (
+            <Alert severity="info">Agentic settings are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
       {!canManageGroups ? <Alert severity="warning">Settings are available only to Workbench administrators and group managers.</Alert> : null}
     </Stack>
   );
@@ -5874,11 +6151,11 @@ export default function WorkspacePage() {
               <MenuItem
                 onClick={() => {
                   closeUserMenu();
-                  setSettingsOpen(true);
+                  setTab("settings");
                 }}
               >
                 <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
-                Workspace Settings
+                Settings
               </MenuItem>
             ) : null}
             <MenuItem
@@ -5899,12 +6176,13 @@ export default function WorkspacePage() {
           display: "grid",
           gridTemplateColumns: {
             xs: "1fr",
-            lg: `${navPaneWidth}px 12px minmax(0, 1fr)`,
+            lg: settingsTabActive ? "minmax(0, 1fr)" : `${navPaneWidth}px 12px minmax(0, 1fr)`,
           },
           gap: 0,
           p: workspaceOuterPadding,
         }}
       >
+        {!settingsTabActive ? (
         <Paper
           component="aside"
           sx={{
@@ -6001,15 +6279,18 @@ export default function WorkspacePage() {
             ) : null}
           </Stack>
         </Paper>
+        ) : null}
+        {!settingsTabActive ? (
         <Box
           role="separator"
           aria-orientation="vertical"
           sx={resizeHandleStyles()}
           onMouseDown={(event) => beginHorizontalResize(event, navPaneWidth, setNavPaneWidth, 260, 520)}
         />
-        <Stack spacing={sectionSpacing} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: compactUi ? 1.5 : 2 } }}>
+        ) : null}
+        <Stack spacing={sectionSpacing} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: settingsTabActive ? 0 : compactUi ? 1.5 : 2 } }}>
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
-          {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
+          {!settingsTabActive && projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ p: compactUi ? 1 : 1.25 }}>
               <Button
@@ -6036,6 +6317,23 @@ export default function WorkspacePage() {
                   onClick={openWorkspaceMenu("api")}
                 >
                   API
+                </Button>
+              ) : null}
+              <Button
+                size="small"
+                variant={tab === "agent" ? "contained" : "text"}
+                onClick={() => setTab("agent")}
+              >
+                Agent
+              </Button>
+              {canManageGroups ? (
+                <Button
+                  size="small"
+                  variant={tab === "settings" ? "contained" : "text"}
+                  startIcon={<SettingsRoundedIcon />}
+                  onClick={() => setTab("settings")}
+                >
+                  Settings
                 </Button>
               ) : null}
             </Stack>
@@ -6103,24 +6401,11 @@ export default function WorkspacePage() {
             {tab === "compare" ? renderCompare() : null}
             {tab === "agent" ? renderWorkbenchAgent() : null}
             {tab === "developer" && isAdmin ? renderDeveloperApi() : null}
-            {tab === "api" ? renderApiExplorer() : null}
+            {tab === "api" && isAdmin ? renderApiExplorer() : null}
+            {tab === "settings" && canManageGroups ? renderSettingsPage() : null}
           </Box>
         </Stack>
       </Box>
-      <SettingsDialog
-        open={settingsOpen}
-        preferences={currentPreferences}
-        saving={settingsMutation.isPending}
-        extraContent={renderSettingsExtras()}
-        onClose={() => {
-          setSettingsOpen(false);
-          setRevealedCacheIngestToken("");
-          setRevealedCacheApiKey("");
-        }}
-        onSave={async (preferences) => {
-          await settingsMutation.mutateAsync(preferences);
-        }}
-      />
     </Box>
   );
 }

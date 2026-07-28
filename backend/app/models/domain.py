@@ -397,6 +397,37 @@ class WorkbenchGroupUpdateRequest(BaseModel):
         return WorkbenchGroupCreateRequest.normalize_group_users(value)
 
 
+class WorkbenchProjectAccessAssignmentRequest(BaseModel):
+    principal_type: Literal["user", "group"]
+    principal_name: str
+    project_id: str
+    branch_id: str | None = None
+    accessible: bool = True
+    editable: bool = False
+    admin_access: bool = False
+
+    @field_validator("principal_name", "project_id", "branch_id", mode="before")
+    @classmethod
+    def normalize_assignment_fields(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchProjectAccessAssignmentResponse(BaseModel):
+    principal_type: Literal["user", "group"]
+    principal_name: str
+    project_id: str
+    branch_ids: list[str] = Field(default_factory=list)
+    assigned_usernames: list[str] = Field(default_factory=list)
+    accessible: bool
+    editable: bool
+    admin_access: bool
+    message: str
+
+
 class WorkbenchAuthAdminStatus(BaseModel):
     settings: WorkbenchAuthSettings
     local_user_count: int = 0
