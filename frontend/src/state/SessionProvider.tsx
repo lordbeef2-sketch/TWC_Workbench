@@ -24,6 +24,7 @@ function createEmptySession(): SessionSnapshot {
     pending_server: null,
     server_state: null,
     can_manage_server_presets: false,
+    can_manage_groups: false,
     capabilities: null,
     preferences: {
       theme_mode: "system",

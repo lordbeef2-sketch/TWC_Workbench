@@ -20,6 +20,9 @@ from app.models.domain import (
     PresetServerDefinition,
     ServerProfile,
     UserServerState,
+    WorkbenchAuthSettings,
+    WorkbenchGroupRecord,
+    WorkbenchUserRecord,
     utcnow,
 )
 
@@ -164,6 +167,41 @@ class SqliteRepository:
                     scope TEXT PRIMARY KEY,
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_config (
+                    key TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workbench_users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    display_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workbench_groups (
+                    name TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
                 )
                 """
             )
@@ -1583,6 +1621,131 @@ class SqliteRepository:
         if not row:
             return None
         return CachedElementRecord.model_validate_json(row["payload"])
+
+    def get_auth_settings(self) -> WorkbenchAuthSettings:
+        with self._lock, self._connect() as connection:
+            row = connection.execute("SELECT payload FROM app_config WHERE key = ?", ("auth-settings",)).fetchone()
+        if not row:
+            return WorkbenchAuthSettings()
+        return WorkbenchAuthSettings.model_validate_json(row["payload"])
+
+    def has_auth_settings(self) -> bool:
+        with self._lock, self._connect() as connection:
+            row = connection.execute("SELECT 1 FROM app_config WHERE key = ?", ("auth-settings",)).fetchone()
+        return bool(row)
+
+    def set_auth_settings(self, settings: WorkbenchAuthSettings) -> WorkbenchAuthSettings:
+        stored = settings.model_copy()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO app_config (key, payload, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                ("auth-settings", stored.model_dump_json(), utcnow().isoformat()),
+            )
+            connection.commit()
+        return stored
+
+    def list_workbench_users(self) -> list[WorkbenchUserRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM workbench_users ORDER BY LOWER(username)"
+            ).fetchall()
+        return [WorkbenchUserRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def get_workbench_user(self, username: str) -> WorkbenchUserRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM workbench_users WHERE username = ?",
+                (username.strip().lower(),),
+            ).fetchone()
+        if not row:
+            return None
+        return WorkbenchUserRecord.model_validate_json(row["payload"])
+
+    def upsert_workbench_user(self, user: WorkbenchUserRecord) -> WorkbenchUserRecord:
+        stored = user.model_copy(update={"username": user.username.strip().lower(), "updated_at": utcnow()})
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO workbench_users (
+                    username, password_hash, role, enabled, display_name,
+                    created_at, updated_at, last_login_at, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.username,
+                    stored.password_hash,
+                    stored.role.value,
+                    1 if stored.enabled else 0,
+                    stored.display_name,
+                    stored.created_at.isoformat(),
+                    stored.updated_at.isoformat(),
+                    stored.last_login_at.isoformat() if stored.last_login_at else None,
+                    stored.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return stored
+
+    def delete_workbench_user(self, username: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM workbench_users WHERE username = ?",
+                (username.strip().lower(),),
+            )
+            connection.commit()
+        return cursor.rowcount > 0
+
+    def list_workbench_groups(self) -> list[WorkbenchGroupRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM workbench_groups ORDER BY LOWER(name)"
+            ).fetchall()
+        return [WorkbenchGroupRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def get_workbench_group(self, name: str) -> WorkbenchGroupRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM workbench_groups WHERE name = ?",
+                (name.strip().lower(),),
+            ).fetchone()
+        if not row:
+            return None
+        return WorkbenchGroupRecord.model_validate_json(row["payload"])
+
+    def upsert_workbench_group(self, group: WorkbenchGroupRecord) -> WorkbenchGroupRecord:
+        normalized_users = sorted({item.strip().lower() for item in group.users if item.strip()})
+        stored = group.model_copy(update={"name": group.name.strip().lower(), "users": normalized_users, "updated_at": utcnow()})
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO workbench_groups (
+                    name, enabled, created_at, updated_at, payload
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.name,
+                    1 if stored.enabled else 0,
+                    stored.created_at.isoformat(),
+                    stored.updated_at.isoformat(),
+                    stored.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return stored
+
+    def delete_workbench_group(self, name: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM workbench_groups WHERE name = ?",
+                (name.strip().lower(),),
+            )
+            connection.commit()
+        return cursor.rowcount > 0
 
     def _prune_invalid_user_server_state(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
         rows = connection.execute("SELECT user_id, payload FROM user_server_state").fetchall()

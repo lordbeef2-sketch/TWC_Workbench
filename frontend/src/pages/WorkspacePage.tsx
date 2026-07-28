@@ -65,6 +65,9 @@ import {
   SwaggerParameterSpec,
   TreeNode,
   WorkbenchAgentChatMessage,
+  WorkbenchGroupSummary,
+  WorkbenchUserRole,
+  WorkbenchUserSummary,
 } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
@@ -126,6 +129,9 @@ function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab 
     return fallback;
   }
   if (value === "api" && !isAdmin) {
+    return fallback;
+  }
+  if (value === "developer" && !isAdmin) {
     return fallback;
   }
   return value as WorkspaceTab;
@@ -1592,6 +1598,7 @@ export default function WorkspacePage() {
   const capabilities = session?.capabilities?.capabilities ?? {};
   const canEdit = capabilities.edit?.state === "ready";
   const isAdmin = Boolean(session?.can_manage_server_presets);
+  const canManageGroups = isAdmin || Boolean(session?.can_manage_groups);
   const compactUi = currentPreferences.compact_ui ?? true;
   const [itemDetailViewMode, setItemDetailViewMode] = useState<ItemDetailViewMode>(() =>
     parseItemDetailViewMode(currentPreferences.item_detail_view_mode),
@@ -1658,6 +1665,16 @@ export default function WorkspacePage() {
   const [newCacheApiKeyLabel, setNewCacheApiKeyLabel] = useState("");
   const [revealedCacheApiKey, setRevealedCacheApiKey] = useState("");
   const [newCacheApiKeyScopes, setNewCacheApiKeyScopes] = useState<CacheApiKeyScope[]>(["read"]);
+  const [workbenchUserSearch, setWorkbenchUserSearch] = useState("");
+  const [newWorkbenchUsername, setNewWorkbenchUsername] = useState("");
+  const [newWorkbenchDisplayName, setNewWorkbenchDisplayName] = useState("");
+  const [newWorkbenchPassword, setNewWorkbenchPassword] = useState("");
+  const [newWorkbenchRole, setNewWorkbenchRole] = useState<WorkbenchUserRole>("user");
+  const [newWorkbenchUserEnabled, setNewWorkbenchUserEnabled] = useState(true);
+  const [groupSearch, setGroupSearch] = useState("");
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupDescription, setNewGroupDescription] = useState("");
+  const [newGroupUsers, setNewGroupUsers] = useState("");
   const [agentBaseUrlDraft, setAgentBaseUrlDraft] = useState("");
   const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
   const [agentSelectedModelId, setAgentSelectedModelId] = useState("");
@@ -1723,7 +1740,31 @@ export default function WorkspacePage() {
   const cacheApiKeysQuery = useQuery({
     queryKey: ["workspace-cache-api-keys", ...sessionCacheKey],
     queryFn: api.listCacheApiKeys,
-    enabled: Boolean(session?.user?.preferred_username),
+    enabled: isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const authManagementStatusQuery = useQuery({
+    queryKey: ["auth-management-status", ...sessionCacheKey],
+    queryFn: api.getAuthManagementStatus,
+    enabled: isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const workbenchUsersQuery = useQuery({
+    queryKey: ["auth-management-users", ...sessionCacheKey],
+    queryFn: api.listWorkbenchUsers,
+    enabled: canManageGroups,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const workbenchGroupsQuery = useQuery({
+    queryKey: ["auth-management-groups", ...sessionCacheKey],
+    queryFn: api.listWorkbenchGroups,
+    enabled: canManageGroups,
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -2070,6 +2111,27 @@ export default function WorkspacePage() {
   const sharedOslcConsumer = sharedOslcConsumerQuery.data ?? null;
   const cacheIngestTokenStatus = cacheIngestTokenQuery.data ?? null;
   const cacheApiKeys = cacheApiKeysQuery.data ?? [];
+  const authManagementStatus = authManagementStatusQuery.data ?? null;
+  const workbenchUsers = workbenchUsersQuery.data ?? [];
+  const workbenchGroups = workbenchGroupsQuery.data ?? [];
+  const filteredWorkbenchUsers = useMemo(() => {
+    const search = workbenchUserSearch.trim().toLowerCase();
+    if (!search) {
+      return workbenchUsers;
+    }
+    return workbenchUsers.filter((user) =>
+      `${user.username} ${user.display_name} ${user.role}`.toLowerCase().includes(search),
+    );
+  }, [workbenchUserSearch, workbenchUsers]);
+  const filteredWorkbenchGroups = useMemo(() => {
+    const search = groupSearch.trim().toLowerCase();
+    if (!search) {
+      return workbenchGroups;
+    }
+    return workbenchGroups.filter((group) =>
+      `${group.name} ${group.description} ${group.users.join(" ")}`.toLowerCase().includes(search),
+    );
+  }, [groupSearch, workbenchGroups]);
 
   useEffect(() => {
     if (!workbenchAgentStatus) {
@@ -2613,6 +2675,16 @@ export default function WorkspacePage() {
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const revealCacheIngestTokenMutation = useMutation({
+    mutationFn: () => api.revealCacheIngestToken(csrfToken),
+    onSuccess: (result) => {
+      setRevealedCacheIngestToken(result.token);
+      setManualCacheIngestToken(result.token);
+      setNotice({ severity: "success", message: "Current app-managed plugin ingest token revealed. Copy it into the Cameo plugin." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const storeCacheIngestTokenMutation = useMutation({
     mutationFn: () =>
       api.updateCacheIngestToken(
@@ -2667,6 +2739,102 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["workspace-cache-api-keys", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "API key deleted." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const createWorkbenchUserMutation = useMutation({
+    mutationFn: () =>
+      api.createWorkbenchUser(
+        {
+          username: newWorkbenchUsername.trim(),
+          display_name: newWorkbenchDisplayName.trim(),
+          password: newWorkbenchPassword,
+          role: newWorkbenchRole,
+          enabled: newWorkbenchUserEnabled,
+        },
+        csrfToken,
+      ),
+    onSuccess: async () => {
+      setNewWorkbenchUsername("");
+      setNewWorkbenchDisplayName("");
+      setNewWorkbenchPassword("");
+      setNewWorkbenchRole("user");
+      setNewWorkbenchUserEnabled(true);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["auth-management-users", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "Workbench user created." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const updateWorkbenchUserMutation = useMutation({
+    mutationFn: ({ username, role, enabled }: { username: string; role?: WorkbenchUserRole; enabled?: boolean }) =>
+      api.updateWorkbenchUser(username, { role, enabled }, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["auth-management-users", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench user updated." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const resetWorkbenchUserPasswordMutation = useMutation({
+    mutationFn: ({ username, password }: { username: string; password: string }) =>
+      api.updateWorkbenchUser(username, { password }, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["auth-management-users", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench user password reset." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const deleteWorkbenchUserMutation = useMutation({
+    mutationFn: (username: string) => api.deleteWorkbenchUser(username, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["auth-management-users", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench user deleted." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const createWorkbenchGroupMutation = useMutation({
+    mutationFn: () =>
+      api.createWorkbenchGroup(
+        {
+          name: newGroupName.trim(),
+          description: newGroupDescription.trim(),
+          users: newGroupUsers.split(",").map((item) => item.trim()).filter(Boolean),
+          enabled: true,
+        },
+        csrfToken,
+      ),
+    onSuccess: async () => {
+      setNewGroupName("");
+      setNewGroupDescription("");
+      setNewGroupUsers("");
+      await queryClient.invalidateQueries({ queryKey: ["auth-management-groups", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench group created." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const updateWorkbenchGroupMutation = useMutation({
+    mutationFn: ({ name, users, enabled }: { name: string; users?: string[]; enabled?: boolean }) =>
+      api.updateWorkbenchGroup(name, { users, enabled }, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["auth-management-groups", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench group updated." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const deleteWorkbenchGroupMutation = useMutation({
+    mutationFn: (name: string) => api.deleteWorkbenchGroup(name, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["auth-management-groups", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench group deleted." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -4396,6 +4564,196 @@ export default function WorkspacePage() {
     </Stack>
   );
 
+  const renderWorkbenchUsers = () => (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Users</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Admins can create and manage Workbench users. Group managers can view/search users for their assigned group membership work.
+            </Typography>
+          </Box>
+          <Chip label={`${workbenchUsers.length} users`} variant="outlined" />
+        </Stack>
+        {workbenchUsersQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {workbenchUsersQuery.error ? <Alert severity="error">{errorMessage(workbenchUsersQuery.error)}</Alert> : null}
+        <TextField label="Search users" value={workbenchUserSearch} onChange={(event) => setWorkbenchUserSearch(event.target.value)} fullWidth />
+        {isAdmin ? (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Create Workbench user</Typography>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={3}>
+                  <TextField label="Username" value={newWorkbenchUsername} onChange={(event) => setNewWorkbenchUsername(event.target.value)} fullWidth />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField label="Display name" value={newWorkbenchDisplayName} onChange={(event) => setNewWorkbenchDisplayName(event.target.value)} fullWidth />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField label="Temporary password" type="password" value={newWorkbenchPassword} onChange={(event) => setNewWorkbenchPassword(event.target.value)} fullWidth helperText="Minimum 12 characters." />
+                </Grid>
+                <Grid item xs={12} md={2}>
+                  <TextField select label="Role" value={newWorkbenchRole} onChange={(event) => setNewWorkbenchRole(event.target.value as WorkbenchUserRole)} fullWidth>
+                    <MenuItem value="user">User</MenuItem>
+                    <MenuItem value="group_manager">Group Manager</MenuItem>
+                    <MenuItem value="admin">Admin</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} md={1}>
+                  <FormControlLabel control={<Checkbox checked={newWorkbenchUserEnabled} onChange={(event) => setNewWorkbenchUserEnabled(event.target.checked)} />} label="Enabled" />
+                </Grid>
+              </Grid>
+              <Button
+                variant="contained"
+                disabled={!csrfToken || !newWorkbenchUsername.trim() || !newWorkbenchPassword || createWorkbenchUserMutation.isPending}
+                onClick={() => createWorkbenchUserMutation.mutate()}
+              >
+                Create Workbench User
+              </Button>
+            </Stack>
+          </Paper>
+        ) : (
+          <Alert severity="info">Group managers can search users but cannot create, delete, disable, or change user roles.</Alert>
+        )}
+        <Stack spacing={1}>
+          {filteredWorkbenchUsers.map((user: WorkbenchUserSummary) => (
+            <Paper key={user.username} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+              <Stack spacing={1}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+                  <Box>
+                    <Typography variant="subtitle1">{user.display_name || user.username}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {user.username} · created {new Date(user.created_at).toLocaleString()}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label={user.role === "group_manager" ? "group manager" : user.role} color={user.role === "admin" ? "success" : "default"} />
+                    <Chip label={user.enabled ? "enabled" : "disabled"} variant="outlined" color={user.enabled ? "success" : "warning"} />
+                    <Chip label={`${user.accessible_project_count} projects`} variant="outlined" />
+                    <Chip label={`${user.accessible_branch_count} branches`} variant="outlined" />
+                  </Stack>
+                </Stack>
+                {isAdmin ? (
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Button size="small" variant="outlined" onClick={() => updateWorkbenchUserMutation.mutate({ username: user.username, enabled: !user.enabled })}>
+                      {user.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button size="small" variant="outlined" onClick={() => updateWorkbenchUserMutation.mutate({ username: user.username, role: user.role === "admin" ? "user" : "admin" })}>
+                      {user.role === "admin" ? "Make User" : "Make Admin"}
+                    </Button>
+                    <Button size="small" variant="outlined" onClick={() => updateWorkbenchUserMutation.mutate({ username: user.username, role: "group_manager" })}>
+                      Make Group Manager
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        const password = window.prompt(`New temporary password for ${user.username}`);
+                        if (password) {
+                          resetWorkbenchUserPasswordMutation.mutate({ username: user.username, password });
+                        }
+                      }}
+                    >
+                      Reset Password
+                    </Button>
+                    <Button size="small" color="error" variant="outlined" onClick={() => deleteWorkbenchUserMutation.mutate(user.username)}>
+                      Delete
+                    </Button>
+                  </Stack>
+                ) : null}
+              </Stack>
+            </Paper>
+          ))}
+          {!filteredWorkbenchUsers.length ? <Typography color="text.secondary">No Workbench users match this search.</Typography> : null}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+
+  const renderWorkbenchGroups = () => (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Groups</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Admins can create/delete groups. Group managers can edit membership only for groups they already belong to.
+            </Typography>
+          </Box>
+          <Chip label={`${workbenchGroups.length} groups`} variant="outlined" />
+        </Stack>
+        {workbenchGroupsQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {workbenchGroupsQuery.error ? <Alert severity="error">{errorMessage(workbenchGroupsQuery.error)}</Alert> : null}
+        <TextField label="Search groups" value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} fullWidth />
+        {isAdmin ? (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Create Workbench group</Typography>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={3}>
+                  <TextField label="Group name" value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} fullWidth />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField label="Description" value={newGroupDescription} onChange={(event) => setNewGroupDescription(event.target.value)} fullWidth />
+                </Grid>
+                <Grid item xs={12} md={5}>
+                  <TextField label="Users" value={newGroupUsers} onChange={(event) => setNewGroupUsers(event.target.value)} fullWidth helperText="Comma-separated Workbench usernames." />
+                </Grid>
+              </Grid>
+              <Button variant="contained" disabled={!csrfToken || !newGroupName.trim() || createWorkbenchGroupMutation.isPending} onClick={() => createWorkbenchGroupMutation.mutate()}>
+                Create Workbench Group
+              </Button>
+            </Stack>
+          </Paper>
+        ) : (
+          <Alert severity="info">You can update only the groups listed here, because the backend filters this list to groups you are assigned to.</Alert>
+        )}
+        <Stack spacing={1}>
+          {filteredWorkbenchGroups.map((group: WorkbenchGroupSummary) => (
+            <Paper key={group.name} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+              <Stack spacing={1}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+                  <Box>
+                    <Typography variant="subtitle1">{group.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">{group.description || "No description"}</Typography>
+                  </Box>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label={group.enabled ? "enabled" : "disabled"} color={group.enabled ? "success" : "warning"} variant="outlined" />
+                    <Chip label={`${group.users.length} users`} variant="outlined" />
+                  </Stack>
+                </Stack>
+                <TextField
+                  label="Users"
+                  defaultValue={group.users.join(", ")}
+                  fullWidth
+                  helperText="Comma-separated usernames. Save replaces membership."
+                  onBlur={(event) => {
+                    const nextUsers = event.target.value.split(",").map((item) => item.trim()).filter(Boolean);
+                    if (nextUsers.join(",") !== group.users.join(",")) {
+                      updateWorkbenchGroupMutation.mutate({ name: group.name, users: nextUsers });
+                    }
+                  }}
+                />
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Button size="small" variant="outlined" onClick={() => updateWorkbenchGroupMutation.mutate({ name: group.name, enabled: !group.enabled })}>
+                    {group.enabled ? "Disable" : "Enable"}
+                  </Button>
+                  {isAdmin ? (
+                    <Button size="small" color="error" variant="outlined" onClick={() => deleteWorkbenchGroupMutation.mutate(group.name)}>
+                      Delete
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Stack>
+            </Paper>
+          ))}
+          {!filteredWorkbenchGroups.length ? <Typography color="text.secondary">No Workbench groups match this search or your group-manager assignment.</Typography> : null}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+
   const renderCacheApiKeys = () => (
     <Paper sx={{ p: 3, borderRadius: 2 }}>
       <Stack spacing={2}>
@@ -4572,6 +4930,13 @@ export default function WorkspacePage() {
                   {cacheIngestTokenStatus.configured ? "Rotate Token" : "Generate Token"}
                 </Button>
                 <Button
+                  variant="outlined"
+                  disabled={!csrfToken || cacheIngestTokenStatus.source !== "shared" || revealCacheIngestTokenMutation.isPending}
+                  onClick={() => revealCacheIngestTokenMutation.mutate()}
+                >
+                  Reveal Current Token
+                </Button>
+                <Button
                   variant="text"
                   color="warning"
                   disabled={!csrfToken || cacheIngestTokenStatus.source !== "shared" || clearCacheIngestTokenMutation.isPending}
@@ -4579,7 +4944,7 @@ export default function WorkspacePage() {
                 >
                   Clear App-Managed Token
                 </Button>
-                {storeCacheIngestTokenMutation.isPending || rotateCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
+                {storeCacheIngestTokenMutation.isPending || rotateCacheIngestTokenMutation.isPending || revealCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
               </Stack>
               {cacheIngestTokenStatus.updated_at ? (
                 <Typography variant="caption" color="text.secondary">
@@ -4589,10 +4954,10 @@ export default function WorkspacePage() {
               {revealedCacheIngestToken ? (
                 <>
                   <Alert severity="success">
-                    Copy this token into the Cameo plugin now. Workbench stores it encrypted and will not show the full value again after you leave this screen.
+                    Copy this token into the Cameo plugin. Workbench stores the app-managed token encrypted; administrators can reveal it here when needed.
                   </Alert>
                   <TextField
-                    label="New plugin ingest token"
+                    label="Plugin ingest token"
                     value={revealedCacheIngestToken}
                     fullWidth
                     InputProps={{ readOnly: true }}
@@ -4906,6 +5271,43 @@ export default function WorkspacePage() {
 
   const renderAdminSettings = () => (
     <Stack spacing={2}>
+      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+        <Stack spacing={1.5}>
+          <Typography variant="h5">Authentication</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Choose whether this 2022x Workbench uses local Workbench users or TWC-managed users. Only one authority should be active at a time.
+          </Typography>
+          {authManagementStatusQuery.isLoading ? <CircularProgress size={28} /> : null}
+          {authManagementStatusQuery.error ? <Alert severity="error">{errorMessage(authManagementStatusQuery.error)}</Alert> : null}
+          {authManagementStatus ? (
+            <Stack spacing={1.5}>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip label={`Settings mode: ${authManagementStatus.settings.user_management_mode === "local" ? "local users" : "TWC users"}`} color="success" variant="outlined" />
+                <Chip label={`${authManagementStatus.local_user_count} local users`} variant="outlined" />
+              </Stack>
+              <Alert severity="info">
+                Local mode enables Workbench username/password users and disables TWC token/browser sign-in. TWC mode disables local users and keeps selected TWC sign-in methods available.
+              </Alert>
+              <TextField
+                select
+                label="Authentication authority"
+                value={authManagementStatus.settings.user_management_mode}
+                onChange={(event) =>
+                  void api
+                    .updateAuthManagementSettings({ user_management_mode: event.target.value as "local" | "twc" }, csrfToken)
+                    .then(() => queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }))
+                    .catch((caught) => setNotice({ severity: "error", message: errorMessage(caught) }))
+                }
+                fullWidth
+                disabled={!csrfToken}
+              >
+                <MenuItem value="local">Workbench local users</MenuItem>
+                <MenuItem value="twc">Teamwork Cloud users</MenuItem>
+              </TextField>
+            </Stack>
+          ) : null}
+        </Stack>
+      </Paper>
       {renderCacheIngestToken()}
       {renderOslc()}
     </Stack>
@@ -4970,6 +5372,7 @@ export default function WorkspacePage() {
 
   const renderWorkbenchAgent = () => (
     <Stack spacing={2}>
+      {isAdmin ? (
       <Paper sx={{ p: 3, borderRadius: 2 }}>
         <Stack spacing={2}>
           <Box>
@@ -5072,6 +5475,11 @@ export default function WorkspacePage() {
           ) : null}
         </Stack>
       </Paper>
+      ) : (
+        <Alert severity="info">
+          Agentic connection settings are administrator-only. You can still use the mapped Workbench Agent if an admin has configured it for this Workbench instance.
+        </Alert>
+      )}
 
       <Paper sx={{ p: 3, borderRadius: 2 }}>
         <Stack spacing={2}>
@@ -5201,8 +5609,11 @@ export default function WorkspacePage() {
 
   const renderSettingsExtras = () => (
     <Stack spacing={2}>
-      {renderCacheApiKeys()}
+      {canManageGroups ? renderWorkbenchUsers() : null}
+      {canManageGroups ? renderWorkbenchGroups() : null}
+      {isAdmin ? renderCacheApiKeys() : null}
       {isAdmin ? renderAdminSettings() : null}
+      {!canManageGroups ? <Alert severity="warning">Settings are available only to Workbench administrators and group managers.</Alert> : null}
     </Stack>
   );
 
@@ -5459,15 +5870,17 @@ export default function WorkspacePage() {
             keepMounted
           >
             <MenuItem disabled>{userMenuLabel}</MenuItem>
-            <MenuItem
-              onClick={() => {
-                closeUserMenu();
-                setSettingsOpen(true);
-              }}
-            >
-              <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
-              Workspace Settings
-            </MenuItem>
+            {canManageGroups ? (
+              <MenuItem
+                onClick={() => {
+                  closeUserMenu();
+                  setSettingsOpen(true);
+                }}
+              >
+                <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
+                Workspace Settings
+              </MenuItem>
+            ) : null}
             <MenuItem
               onClick={() => {
                 closeUserMenu();
@@ -5615,14 +6028,16 @@ export default function WorkspacePage() {
               >
                 Diagrams
               </Button>
-              <Button
-                size="small"
-                variant={currentMenuGroup === "api" ? "contained" : "text"}
-                endIcon={<KeyboardArrowDownRoundedIcon />}
-                onClick={openWorkspaceMenu("api")}
-              >
-                API
-              </Button>
+              {isAdmin ? (
+                <Button
+                  size="small"
+                  variant={currentMenuGroup === "api" ? "contained" : "text"}
+                  endIcon={<KeyboardArrowDownRoundedIcon />}
+                  onClick={openWorkspaceMenu("api")}
+                >
+                  API
+                </Button>
+              ) : null}
             </Stack>
             <Menu
               anchorEl={workspaceMenuAnchorEl}
@@ -5667,9 +6082,9 @@ export default function WorkspacePage() {
               ) : null}
               {workspaceMenuGroup === "api" ? (
                 [
-                  <MenuItem key="developer" selected={tab === "developer"} onClick={() => { setTab("developer"); closeWorkspaceMenu(); }}>Developer API</MenuItem>,
                   ...(isAdmin
                     ? [
+                        <MenuItem key="developer" selected={tab === "developer"} onClick={() => { setTab("developer"); closeWorkspaceMenu(); }}>Developer API</MenuItem>,
                         <MenuItem key="api-explorer" selected={tab === "api"} onClick={() => { setTab("api"); closeWorkspaceMenu(); }}>
                           API Explorer
                         </MenuItem>,
@@ -5687,7 +6102,7 @@ export default function WorkspacePage() {
             {tab === "diagram-viewer" ? renderDiagramViewer() : null}
             {tab === "compare" ? renderCompare() : null}
             {tab === "agent" ? renderWorkbenchAgent() : null}
-            {tab === "developer" ? renderDeveloperApi() : null}
+            {tab === "developer" && isAdmin ? renderDeveloperApi() : null}
             {tab === "api" ? renderApiExplorer() : null}
           </Box>
         </Stack>

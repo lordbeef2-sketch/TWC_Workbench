@@ -4,6 +4,7 @@ import asyncio
 import base64
 import csv
 import hashlib
+import hmac
 import json
 import secrets
 from contextlib import suppress
@@ -47,10 +48,12 @@ from app.models.domain import (
     CacheApiManifest,
     CacheApiTokenIdentity,
     CacheIngestTokenRotateResponse,
+    CacheIngestTokenRevealResponse,
     CacheIngestTokenStatus,
     CacheServerEntry,
     CacheProjectBranchEntry,
     CacheProjectEntry,
+    CapabilitySummary,
     CapabilityState,
     CachedElementQueryResponse,
     CachedElementRecord,
@@ -100,12 +103,25 @@ from app.models.domain import (
     TWCVersion,
     UserServerState,
     UserContext,
+    WorkbenchAuthAdminStatus,
+    WorkbenchAuthSettings,
+    WorkbenchAuthSettingsUpdate,
     WorkbenchAgentChatRequest,
     WorkbenchAgentChatResponse,
     WorkbenchAgentConfigRequest,
     WorkbenchAgentKnowledgeStatus,
     WorkbenchAgentSecret,
     WorkbenchAgentStatus,
+    WorkbenchGroupCreateRequest,
+    WorkbenchGroupRecord,
+    WorkbenchGroupSummary,
+    WorkbenchGroupUpdateRequest,
+    WorkbenchLocalLoginRequest,
+    WorkbenchUserCreateRequest,
+    WorkbenchUserRecord,
+    WorkbenchUserRole,
+    WorkbenchUserSummary,
+    WorkbenchUserUpdateRequest,
     WebhookRegistrationStatus,
     CacheTreeResponse,
     StereotypeElementSearchResponse,
@@ -207,6 +223,322 @@ class PlatformService:
 
     def can_manage_server_presets(self, session: SessionData) -> bool:
         return session.authorization_context.can_manage_server_presets
+
+    def _has_workbench_admin_model_visibility(self, session: SessionData) -> bool:
+        authorization_context = getattr(session, "authorization_context", None)
+        return bool(getattr(authorization_context, "can_manage_server_presets", False))
+
+    def can_manage_groups(self, session: SessionData) -> bool:
+        return session.authorization_context.can_manage_server_presets or session.authorization_context.can_manage_groups
+
+    def auth_admin_status(self, session: SessionData | None = None) -> WorkbenchAuthAdminStatus:
+        users = self.repo.list_workbench_users()
+        settings = self.get_auth_settings()
+        return WorkbenchAuthAdminStatus(
+            settings=settings,
+            local_user_count=len(users),
+            first_admin_setup_required=settings.user_management_mode == "local" and len(users) == 0,
+            can_manage_users=bool(session and self.can_manage_groups(session)),
+        )
+
+    def get_auth_settings(self) -> WorkbenchAuthSettings:
+        stored = self.repo.get_auth_settings()
+        if not self.repo.has_auth_settings():
+            stored = stored.model_copy(update={"user_management_mode": self.settings.workbench_user_management_mode})
+        return self._normalize_auth_settings(stored)
+
+    def _normalize_auth_settings(self, settings: WorkbenchAuthSettings) -> WorkbenchAuthSettings:
+        if settings.user_management_mode == "local":
+            return settings.model_copy(
+                update={
+                    "local_users_enabled": True,
+                    "twc_redirect_enabled": False,
+                    "twc_token_enabled": False,
+                }
+            )
+        twc_redirect_enabled = settings.twc_redirect_enabled
+        twc_token_enabled = settings.twc_token_enabled
+        if not twc_redirect_enabled and not twc_token_enabled:
+            twc_redirect_enabled = True
+            twc_token_enabled = True
+        return settings.model_copy(
+            update={
+                "local_users_enabled": False,
+                "twc_redirect_enabled": twc_redirect_enabled,
+                "twc_token_enabled": twc_token_enabled,
+            }
+        )
+
+    def update_auth_settings(self, payload: WorkbenchAuthSettingsUpdate) -> WorkbenchAuthSettings:
+        current = self.get_auth_settings()
+        candidate = current.model_copy(update=payload.model_dump(exclude_none=True))
+        if candidate.user_management_mode == "twc" and not (candidate.twc_redirect_enabled or candidate.twc_token_enabled):
+            raise ValueError("At least one TWC sign-in method must remain enabled in TWC user management mode.")
+        updated = self._normalize_auth_settings(candidate)
+        return self.repo.set_auth_settings(updated)
+
+    def _normalize_workbench_username(self, username: str) -> str:
+        value = username.strip().lower()
+        if not re.match(r"^[a-z0-9_.@-]{2,128}$", value):
+            raise ValueError("Workbench usernames must be 2-128 characters and may contain letters, numbers, dot, underscore, dash, or @.")
+        return value
+
+    def _hash_workbench_password(self, password: str, *, allow_weak: bool = False) -> str:
+        if not allow_weak and len(password) < 12:
+            raise ValueError("Workbench passwords must be at least 12 characters.")
+        salt = secrets.token_bytes(16)
+        rounds = 390_000
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+        return f"pbkdf2_sha256${rounds}${base64.b64encode(salt).decode('ascii')}${base64.b64encode(digest).decode('ascii')}"
+
+    def _verify_workbench_password(self, password: str, encoded_hash: str) -> bool:
+        try:
+            algorithm, rounds_raw, salt_raw, digest_raw = encoded_hash.split("$", 3)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            salt = base64.b64decode(salt_raw.encode("ascii"))
+            expected = base64.b64decode(digest_raw.encode("ascii"))
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds_raw))
+            return hmac.compare_digest(digest, expected)
+        except Exception:
+            return False
+
+    def list_workbench_users(self, session: SessionData) -> list[WorkbenchUserSummary]:
+        server_id = session.server.id
+        summaries: list[WorkbenchUserSummary] = []
+        for user in self.repo.list_workbench_users():
+            branch_records = [
+                record
+                for record in self.repo.list_user_branch_access_records(user.username, server_id)
+                if record.accessible
+            ]
+            summaries.append(
+                WorkbenchUserSummary(
+                    username=user.username,
+                    role=user.role,
+                    enabled=user.enabled,
+                    display_name=user.display_name,
+                    created_at=user.created_at,
+                    updated_at=user.updated_at,
+                    last_login_at=user.last_login_at,
+                    accessible_project_count=len({record.project_id for record in branch_records}),
+                    accessible_branch_count=len(branch_records),
+                    password_change_required=user.password_change_required,
+                )
+            )
+        return summaries
+
+    def create_workbench_user(self, payload: WorkbenchUserCreateRequest) -> WorkbenchUserSummary:
+        username = self._normalize_workbench_username(payload.username)
+        if self.repo.get_workbench_user(username):
+            raise ValueError("Workbench user already exists.")
+        user = WorkbenchUserRecord(
+            username=username,
+            password_hash=self._hash_workbench_password(payload.password),
+            role=payload.role,
+            enabled=payload.enabled,
+            display_name=payload.display_name,
+            password_change_required=False,
+        )
+        stored = self.repo.upsert_workbench_user(user)
+        return WorkbenchUserSummary(
+            username=stored.username,
+            role=stored.role,
+            enabled=stored.enabled,
+            display_name=stored.display_name,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            last_login_at=stored.last_login_at,
+            password_change_required=stored.password_change_required,
+        )
+
+    def update_workbench_user(self, username: str, payload: WorkbenchUserUpdateRequest) -> WorkbenchUserSummary:
+        normalized = self._normalize_workbench_username(username)
+        user = self.repo.get_workbench_user(normalized)
+        if not user:
+            raise KeyError(normalized)
+        updates: dict[str, Any] = {}
+        if payload.password is not None:
+            updates["password_hash"] = self._hash_workbench_password(payload.password)
+            updates["password_change_required"] = False
+        if payload.role is not None:
+            updates["role"] = payload.role
+        if payload.enabled is not None:
+            updates["enabled"] = payload.enabled
+        if payload.display_name is not None:
+            updates["display_name"] = payload.display_name
+        if user.enabled and user.role == WorkbenchUserRole.ADMIN and (
+            updates.get("enabled") is False or updates.get("role") in {WorkbenchUserRole.USER, WorkbenchUserRole.GROUP_MANAGER}
+        ):
+            other_enabled_admins = [
+                candidate
+                for candidate in self.repo.list_workbench_users()
+                if candidate.username != normalized and candidate.enabled and candidate.role == WorkbenchUserRole.ADMIN
+            ]
+            if not other_enabled_admins:
+                raise ValueError("At least one enabled Workbench admin must remain.")
+        stored = self.repo.upsert_workbench_user(user.model_copy(update=updates))
+        return WorkbenchUserSummary(
+            username=stored.username,
+            role=stored.role,
+            enabled=stored.enabled,
+            display_name=stored.display_name,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            last_login_at=stored.last_login_at,
+            password_change_required=stored.password_change_required,
+        )
+
+    def delete_workbench_user(self, username: str) -> bool:
+        normalized = self._normalize_workbench_username(username)
+        user = self.repo.get_workbench_user(normalized)
+        if user and user.enabled and user.role == WorkbenchUserRole.ADMIN:
+            other_enabled_admins = [
+                candidate
+                for candidate in self.repo.list_workbench_users()
+                if candidate.username != normalized and candidate.enabled and candidate.role == WorkbenchUserRole.ADMIN
+            ]
+            if not other_enabled_admins:
+                raise ValueError("At least one enabled Workbench admin must remain.")
+        return self.repo.delete_workbench_user(normalized)
+
+    def list_workbench_groups(self, session: SessionData) -> list[WorkbenchGroupSummary]:
+        groups = self.repo.list_workbench_groups()
+        if not session.authorization_context.can_manage_server_presets:
+            username = self._normalize_workbench_username(session.user.preferred_username)
+            groups = [group for group in groups if username in {self._normalize_workbench_username(user) for user in group.users}]
+        return [self._workbench_group_summary(group) for group in groups]
+
+    def create_workbench_group(self, payload: WorkbenchGroupCreateRequest) -> WorkbenchGroupSummary:
+        name = self._normalize_workbench_group_name(payload.name)
+        if not name:
+            raise ValueError("Group name is required.")
+        if self.repo.get_workbench_group(name):
+            raise ValueError("Workbench group already exists.")
+        users = self._normalize_workbench_group_users(payload.users)
+        self._validate_workbench_group_users(users)
+        group = WorkbenchGroupRecord(
+            name=name,
+            description=payload.description,
+            users=users,
+            enabled=payload.enabled,
+        )
+        return self._workbench_group_summary(self.repo.upsert_workbench_group(group))
+
+    def update_workbench_group(self, session: SessionData, name: str, payload: WorkbenchGroupUpdateRequest) -> WorkbenchGroupSummary:
+        normalized = self._normalize_workbench_group_name(name)
+        group = self.repo.get_workbench_group(normalized)
+        if not group:
+            raise KeyError(normalized)
+        self._require_workbench_group_write(session, group)
+        updates: dict[str, Any] = {}
+        if payload.description is not None:
+            updates["description"] = payload.description
+        if payload.enabled is not None:
+            updates["enabled"] = payload.enabled
+        if payload.users is not None:
+            users = self._normalize_workbench_group_users(payload.users)
+            self._validate_workbench_group_users(users)
+            updates["users"] = users
+        return self._workbench_group_summary(self.repo.upsert_workbench_group(group.model_copy(update=updates)))
+
+    def delete_workbench_group(self, session: SessionData, name: str) -> bool:
+        if not session.authorization_context.can_manage_server_presets:
+            raise PermissionError("Only Workbench administrators can delete groups.")
+        return self.repo.delete_workbench_group(self._normalize_workbench_group_name(name))
+
+    def _require_workbench_group_write(self, session: SessionData, group: WorkbenchGroupRecord) -> None:
+        if session.authorization_context.can_manage_server_presets:
+            return
+        username = self._normalize_workbench_username(session.user.preferred_username)
+        if username not in {self._normalize_workbench_username(user) for user in group.users}:
+            raise PermissionError("Group managers can only manage groups they are already assigned to.")
+
+    def _workbench_group_summary(self, group: WorkbenchGroupRecord) -> WorkbenchGroupSummary:
+        return WorkbenchGroupSummary(
+            name=group.name,
+            description=group.description,
+            users=group.users,
+            enabled=group.enabled,
+            created_at=group.created_at,
+            updated_at=group.updated_at,
+        )
+
+    def _normalize_workbench_group_name(self, value: str) -> str:
+        return re.sub(r"\s+", " ", value.strip()).lower()
+
+    def _normalize_workbench_group_users(self, users: list[str]) -> list[str]:
+        return sorted({self._normalize_workbench_username(user) for user in users if user.strip()})
+
+    def _validate_workbench_group_users(self, users: list[str]) -> None:
+        missing = [user for user in users if not self.repo.get_workbench_user(user)]
+        if missing:
+            raise ValueError(f"Workbench group references unknown user(s): {', '.join(missing)}")
+
+    def login_with_workbench_password(self, payload: WorkbenchLocalLoginRequest) -> SessionData:
+        settings = self.get_auth_settings()
+        if not settings.local_users_enabled:
+            raise PermissionError("Workbench username/password sign-in is disabled.")
+        username = self._normalize_workbench_username(payload.username)
+        self._bootstrap_default_workbench_admin_if_needed(username, payload.password)
+        server = self._server_for_workbench_local_login(payload.server_id)
+        user_record = self.repo.get_workbench_user(username)
+        if not user_record or not user_record.enabled or not self._verify_workbench_password(payload.password, user_record.password_hash):
+            raise PermissionError("Invalid Workbench username or password.")
+        user = UserContext(
+            preferred_username=username,
+            server_id=server.id,
+            server_name=server.name,
+            auth_source="workbench-local",
+        )
+        authorization_context = AuthorizationContext(
+            roles=[user_record.role.value],
+            source="workbench-local",
+            can_manage_server_presets=user_record.role == WorkbenchUserRole.ADMIN,
+            can_manage_groups=user_record.role in {WorkbenchUserRole.ADMIN, WorkbenchUserRole.GROUP_MANAGER},
+        )
+        session = self.sessions.create_session(
+            server,
+            user,
+            authorization_context,
+            TokenBundle(token_type="WorkbenchLocal", upstream_user=username),
+            CapabilitySummary(detected_version=server.version.value, reachable_endpoints={}, capabilities={}),
+        )
+        self.repo.upsert_workbench_user(user_record.model_copy(update={"last_login_at": utcnow()}))
+        self._update_user_server_state(user.preferred_username, server.id, session.created_at)
+        logger.info("workbench-local-login-complete", user=username, server_id=server.id)
+        return session
+
+    def _server_for_workbench_local_login(self, server_id: str) -> ServerProfile:
+        if server_id:
+            return self._require_server(server_id, include_disabled=False)
+        servers = self.repo.list_servers()
+        if servers:
+            return servers[0]
+        return ServerProfile(
+            id="workbench-setup",
+            name="Workbench Setup",
+            base_url="http://workbench.local",
+            enabled=True,
+        )
+
+    def _bootstrap_default_workbench_admin_if_needed(self, username: str, password: str) -> None:
+        if self.repo.list_workbench_users():
+            return
+        default_username = self._normalize_workbench_username(self.settings.workbench_default_admin_username or "admin")
+        default_password = self.settings.workbench_default_admin_password or "admin"
+        if username != default_username or password != default_password:
+            return
+        user = WorkbenchUserRecord(
+            username=default_username,
+            password_hash=self._hash_workbench_password(default_password, allow_weak=True),
+            role=WorkbenchUserRole.ADMIN,
+            enabled=True,
+            display_name="Workbench Administrator",
+            password_change_required=True,
+        )
+        self.repo.upsert_workbench_user(user)
+        logger.warning("workbench-default-admin-bootstrapped", user=default_username)
 
     async def health_check(self, server_id: str, *, include_disabled: bool = False) -> ServerHealth:
         server = self._require_server(server_id, include_disabled=include_disabled)
@@ -593,7 +925,7 @@ class PlatformService:
 
     async def list_project_branches(self, session: SessionData, project_id: str, workspace_id: str | None = None, refresh: bool = False):
         cache_key = self._branch_cache_key(project_id)
-        if not refresh:
+        if not refresh and not self._has_workbench_admin_model_visibility(session):
             cached_branches = self._cached_model_list(session, cache_key, BranchSummary)
             if cached_branches is not None:
                 return cached_branches
@@ -616,7 +948,14 @@ class PlatformService:
         return branches
 
     def _project_summaries_from_cache_for_user(self, session: SessionData) -> list[ProjectSummary]:
-        cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
+        if self._has_workbench_admin_model_visibility(session):
+            cached_projects = self.list_cached_projects_for_user(
+                session.server.id,
+                session.user.preferred_username,
+                include_all_workbench_admin=True,
+            )
+        else:
+            cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
         return [
             ProjectSummary(
                 id=project.project_id,
@@ -638,7 +977,14 @@ class PlatformService:
         ]
 
     def _branch_summaries_from_cache_for_user(self, session: SessionData, project_id: str) -> list[BranchSummary]:
-        cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
+        if self._has_workbench_admin_model_visibility(session):
+            cached_projects = self.list_cached_projects_for_user(
+                session.server.id,
+                session.user.preferred_username,
+                include_all_workbench_admin=True,
+            )
+        else:
+            cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
         for project in cached_projects:
             if project.project_id != project_id:
                 continue
@@ -718,6 +1064,7 @@ class PlatformService:
                 branch_id,
                 parent_id,
                 model_id=model_id,
+                include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
             )
             return response.items
 
@@ -959,6 +1306,7 @@ class PlatformService:
             limit=limit,
             offset=offset,
             all_results=all_results,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def search_cached_branch_elements(
@@ -989,6 +1337,7 @@ class PlatformService:
             include_details=include_details,
             limit=limit,
             offset=offset,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def search_cached_branch_elements_by_stereotype(
@@ -1011,6 +1360,7 @@ class PlatformService:
             include_details=include_details,
             limit=limit,
             offset=offset,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def get_cached_branch_element(
@@ -1029,6 +1379,7 @@ class PlatformService:
             branch_id,
             element_id,
             model_id=model_id,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def get_branch_ingest_state(self, server_id: str, project_id: str, branch_id: str) -> BranchIngestState:
@@ -1435,12 +1786,21 @@ class PlatformService:
             )
         self.repo.upsert_branch_cache_summary(summary, connection=connection)
 
-    def list_cached_projects_for_user(self, server_id: str, preferred_username: str) -> list[CacheProjectEntry]:
+    def list_cached_projects_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        *,
+        include_all_workbench_admin: bool = False,
+    ) -> list[CacheProjectEntry]:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
         projects: dict[str, CacheProjectEntry] = {}
         for summary in self.repo.list_branch_cache_summaries(server_id):
-            if self._is_plugin_managed_summary(summary):
+            if include_all_workbench_admin:
+                visible_model_count = summary.model_count
+                visible_element_count = summary.element_count
+            elif self._is_plugin_managed_summary(summary):
                 branch_access = self._plugin_branch_access_or_source_fallback(
                     user_id,
                     server_id,
@@ -1694,6 +2054,7 @@ class PlatformService:
         limit: int = 200,
         offset: int = 0,
         all_results: bool = False,
+        include_all_workbench_admin: bool = False,
     ) -> CachedElementQueryResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
@@ -1701,6 +2062,16 @@ class PlatformService:
             limit = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
             offset = 0
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if include_all_workbench_admin:
+            return self.repo.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                search=search,
+                limit=limit,
+                offset=offset,
+            )
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -1754,6 +2125,7 @@ class PlatformService:
         include_details: bool = False,
         limit: int = 200,
         offset: int = 0,
+        include_all_workbench_admin: bool = False,
     ) -> StereotypeElementSearchResponse:
         self._require_server(server_id, include_disabled=True)
         query = stereotype.strip()
@@ -1771,6 +2143,7 @@ class PlatformService:
             branch_id,
             limit=max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1),
             offset=0,
+            include_all_workbench_admin=include_all_workbench_admin,
         ).items
         visible_by_id = {item.element_id: item for item in visible_elements}
         query_normalized = normalize_lookup_key(query)
@@ -1809,7 +2182,17 @@ class PlatformService:
             details = [
                 detail
                 for element in paged_items
-                if (detail := self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element.element_id)) is not None
+                if (
+                    detail := self._cached_item_details_for_user(
+                        server_id,
+                        preferred_username,
+                        project_id,
+                        branch_id,
+                        element.element_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
+                    )
+                )
+                is not None
             ]
 
         return StereotypeElementSearchResponse(
@@ -1830,9 +2213,19 @@ class PlatformService:
         branch_id: str,
         *,
         model_id: str | None = None,
+        include_all_workbench_admin: bool = False,
     ) -> list[CachedElementRecord]:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         branch_total = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
+        if include_all_workbench_admin:
+            return self.repo.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                limit=branch_total,
+                offset=0,
+            ).items
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -1880,10 +2273,17 @@ class PlatformService:
         root_id: str | None = None,
         depth: int | None = None,
         include_orphans: bool = True,
+        include_all_workbench_admin: bool = False,
     ) -> CacheTreeResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
-        visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+        visible_models = self._visible_cached_models_for_user(
+            user_id,
+            server_id,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if model_id is not None:
             visible_models = [model for model in visible_models if model.model_id == model_id]
 
@@ -1932,6 +2332,7 @@ class PlatformService:
                         project_id,
                         branch_id,
                         model_id=model.model_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
                     )
                 },
                 root_id=root_id,
@@ -1965,13 +2366,30 @@ class PlatformService:
         parent_id: str,
         *,
         model_id: str | None = None,
+        include_all_workbench_admin: bool = False,
     ) -> CacheChildrenResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
         if model_id:
-            visible_models = [model for model in self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id) if model.model_id == model_id]
+            visible_models = [
+                model
+                for model in self._visible_cached_models_for_user(
+                    user_id,
+                    server_id,
+                    project_id,
+                    branch_id,
+                    include_all_workbench_admin=include_all_workbench_admin,
+                )
+                if model.model_id == model_id
+            ]
         else:
-            visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+            visible_models = self._visible_cached_models_for_user(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                include_all_workbench_admin=include_all_workbench_admin,
+            )
 
         for model in visible_models:
             if parent_id == model.model_id:
@@ -2053,10 +2471,17 @@ class PlatformService:
         include_details: bool = False,
         limit: int = 200,
         offset: int = 0,
+        include_all_workbench_admin: bool = False,
     ) -> CacheElementSearchResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
-        visible_elements = self._visible_cached_elements_for_user(user_id, server_id, project_id, branch_id)
+        visible_elements = self._visible_cached_elements_for_user(
+            user_id,
+            server_id,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         visible_by_id = {item.element_id: item for item in visible_elements}
         query_normalized = normalize_lookup_key(query or "")
         item_type_normalized = normalize_lookup_key(item_type or "")
@@ -2111,7 +2536,17 @@ class PlatformService:
             details = [
                 detail
                 for element in paged_items
-                if (detail := self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element.element_id)) is not None
+                if (
+                    detail := self._cached_item_details_for_user(
+                        server_id,
+                        preferred_username,
+                        project_id,
+                        branch_id,
+                        element.element_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
+                    )
+                )
+                is not None
             ]
 
         return CacheElementSearchResponse(
@@ -2217,10 +2652,19 @@ class PlatformService:
         element_id: str,
         *,
         model_id: str | None = None,
+        include_all_workbench_admin: bool = False,
     ) -> CachedElementRecord | None:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if include_all_workbench_admin:
+            if model_id is not None:
+                return self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model_id)
+            for model in self.repo.list_cached_models(server_id, project_id, branch_id):
+                match = self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model.model_id)
+                if match is not None:
+                    return match
+            return None
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -2261,15 +2705,26 @@ class PlatformService:
         project_id: str,
         branch_id: str,
         element_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> ItemDetails | None:
-        record = self.get_cached_branch_element_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        record = self.get_cached_branch_element_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if record is None:
             return None
 
         branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
         editable = False
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
-        if self._is_plugin_managed_summary(summary):
+        if include_all_workbench_admin:
+            editable = False
+        elif self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 self._user_key(preferred_username),
                 server_id,
@@ -2298,6 +2753,7 @@ class PlatformService:
                 project_id,
                 branch_id,
                 reference_id,
+                include_all_workbench_admin=include_all_workbench_admin,
             )
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
                 resolved_payloads[reference_id] = referenced_record.payload
@@ -2879,12 +3335,15 @@ class PlatformService:
         cached_record = self.get_cached_branch_element(session, project_id, branch_id, item_id)
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         branch_access = self._branch_access_for_session(session, project_id, branch_id) if self._is_plugin_managed_summary(summary) else None
+        admin_model_visibility = self._has_workbench_admin_model_visibility(session)
         editable = False
         if cached_record is None:
             cached_model = self.repo.get_cached_model(session.server.id, project_id, branch_id, item_id)
             if cached_model is None:
                 return None
-            if self._is_plugin_managed_summary(summary):
+            if admin_model_visibility:
+                editable = False
+            elif self._is_plugin_managed_summary(summary):
                 if branch_access is None or not branch_access.accessible:
                     return None
                 editable = bool(branch_access.editable)
@@ -2907,7 +3366,9 @@ class PlatformService:
                 editable=editable,
             )
 
-        if self._is_plugin_managed_summary(summary):
+        if admin_model_visibility:
+            editable = False
+        elif self._is_plugin_managed_summary(summary):
             editable = bool(branch_access.editable) if branch_access and branch_access.accessible else False
         else:
             permission = self.repo.get_model_permission(
@@ -2980,6 +3441,8 @@ class PlatformService:
         branch_id: str,
     ) -> list[CachedModelRecord]:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._has_workbench_admin_model_visibility(session):
+            return self.repo.list_cached_models(session.server.id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
             branch_access = self._branch_access_for_session(session, project_id, branch_id)
             if branch_access is None or not branch_access.accessible:
@@ -3044,6 +3507,7 @@ class PlatformService:
                     project_id,
                     branch_id,
                     model_id=model.model_id,
+                    include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
                 )
             }
             nodes.append(
@@ -3653,7 +4117,9 @@ class PlatformService:
         models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
         if not models:
             return None
-        if self._is_plugin_managed_summary(summary):
+        if self._has_workbench_admin_model_visibility(session):
+            accessible_models = models
+        elif self._is_plugin_managed_summary(summary):
             branch_access = self._branch_access_for_session(session, project_id, branch_id)
             if branch_access is None or not branch_access.accessible:
                 return None
@@ -4951,8 +5417,12 @@ class PlatformService:
         server_id: str,
         project_id: str,
         branch_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> list[CachedModelRecord]:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if include_all_workbench_admin:
+            return self.repo.list_cached_models(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -5581,6 +6051,19 @@ class PlatformService:
             token=token,
         )
 
+    def reveal_cache_ingest_token(self) -> CacheIngestTokenRevealResponse:
+        token, updated_at = self._shared_cache_ingest_token()
+        if not token:
+            raise ValueError("No app-managed plugin ingest token is stored. Generate or save one first.")
+        return CacheIngestTokenRevealResponse(
+            configured=True,
+            source="shared",
+            token_hint=self._token_hint(token),
+            updated_at=updated_at,
+            message="The app-managed plugin ingest token was revealed for this administrator session.",
+            token=token,
+        )
+
     def set_cache_ingest_token(self, token: str) -> CacheIngestTokenStatus:
         candidate = token.strip()
         if not candidate:
@@ -5784,6 +6267,7 @@ class PlatformService:
         roles = self._merge_claims(*(upstream_roles or []), *((current_user_context.roles) if current_user_context else []))
         groups = self._merge_claims(*(upstream_groups or []), *((current_user_context.groups) if current_user_context else []))
         can_manage = self._claims_grant_admin(preferred_username, roles, groups)
+        can_manage_groups = can_manage or self._claims_grant_group_manager(roles, groups)
 
         if roles or groups:
             return AuthorizationContext(
@@ -5791,6 +6275,7 @@ class PlatformService:
                 groups=groups,
                 source="upstream-authorization-claims",
                 can_manage_server_presets=can_manage,
+                can_manage_groups=can_manage_groups,
             )
 
         return AuthorizationContext(
@@ -5798,6 +6283,7 @@ class PlatformService:
             groups=[],
             source="authenticated-user-default",
             can_manage_server_presets=can_manage,
+            can_manage_groups=can_manage_groups,
         )
 
     def _claims_grant_admin(self, preferred_username: str, roles: list[str], groups: list[str]) -> bool:
@@ -5805,6 +6291,14 @@ class PlatformService:
             return True
         claims = [*(role.lower() for role in roles), *(group.lower() for group in groups)]
         return any(marker in claim for claim in claims for marker in ADMIN_CLAIM_MARKERS)
+
+    def _claims_grant_group_manager(self, roles: list[str], groups: list[str]) -> bool:
+        normalized_claims = {
+            re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+            for value in [*roles, *groups]
+            if value.strip()
+        }
+        return "group manager" in normalized_claims
 
     def _merge_claims(self, *values: str) -> list[str]:
         merged: list[str] = []

@@ -105,6 +105,7 @@ export interface SessionSnapshot {
   pending_server: ServerProfile | null;
   server_state: UserServerState | null;
   can_manage_server_presets: boolean;
+  can_manage_groups: boolean;
   capabilities: CapabilitySummary | null;
   preferences: SessionPreferences;
   bookmarks: Bookmark[];
@@ -397,10 +398,84 @@ export interface ExportRequest {
 }
 
 export interface AuthOptions {
+  local_signin_enabled: boolean;
   token_signin_enabled: boolean;
   redirect_signin_enabled: boolean;
   redirect_signin_message?: string | null;
   csrf_header_name: string;
+  user_management_mode: "local" | "twc";
+}
+
+export type WorkbenchUserRole = "user" | "group_manager" | "admin";
+
+export interface WorkbenchAuthSettings {
+  user_management_mode: "local" | "twc";
+  local_users_enabled: boolean;
+  twc_redirect_enabled: boolean;
+  twc_token_enabled: boolean;
+}
+
+export interface WorkbenchAuthAdminStatus {
+  settings: WorkbenchAuthSettings;
+  local_user_count: number;
+  first_admin_setup_required: boolean;
+  can_manage_users: boolean;
+}
+
+export interface WorkbenchLocalLoginRequest {
+  server_id: string;
+  username: string;
+  password: string;
+}
+
+export interface WorkbenchUserSummary {
+  username: string;
+  role: WorkbenchUserRole;
+  enabled: boolean;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at?: string | null;
+  accessible_project_count: number;
+  accessible_branch_count: number;
+  password_change_required: boolean;
+}
+
+export interface WorkbenchUserCreateRequest {
+  username: string;
+  password: string;
+  role: WorkbenchUserRole;
+  enabled: boolean;
+  display_name: string;
+}
+
+export interface WorkbenchUserUpdateRequest {
+  password?: string | null;
+  role?: WorkbenchUserRole | null;
+  enabled?: boolean | null;
+  display_name?: string | null;
+}
+
+export interface WorkbenchGroupSummary {
+  name: string;
+  description: string;
+  users: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkbenchGroupCreateRequest {
+  name: string;
+  description: string;
+  users: string[];
+  enabled: boolean;
+}
+
+export interface WorkbenchGroupUpdateRequest {
+  description?: string | null;
+  users?: string[] | null;
+  enabled?: boolean | null;
 }
 
 export interface OSLCRootServicesSummary {
@@ -451,6 +526,10 @@ export interface CacheIngestTokenRequest {
 }
 
 export interface CacheIngestTokenRotateResponse extends CacheIngestTokenStatus {
+  token: string;
+}
+
+export interface CacheIngestTokenRevealResponse extends CacheIngestTokenStatus {
   token: string;
 }
 

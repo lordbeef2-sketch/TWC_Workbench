@@ -137,6 +137,7 @@ class AuthorizationContext(BaseModel):
     groups: list[str] = Field(default_factory=list)
     source: str = "authenticated-user-default"
     can_manage_server_presets: bool = False
+    can_manage_groups: bool = False
 
 
 class ServerHealth(BaseModel):
@@ -152,6 +153,7 @@ class UserContext(BaseModel):
     preferred_username: str
     server_id: str
     server_name: str
+    auth_source: Literal["twc", "workbench-local"] = "twc"
 
 
 class Capability(BaseModel):
@@ -235,6 +237,173 @@ class TokenLoginRequest(BaseModel):
     token: str
 
 
+class WorkbenchLocalLoginRequest(BaseModel):
+    server_id: str
+    username: str
+    password: str
+
+    @field_validator("server_id", "username", "password", mode="before")
+    @classmethod
+    def normalize_login_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchAuthSettings(BaseModel):
+    user_management_mode: Literal["local", "twc"] = "local"
+    local_users_enabled: bool = True
+    twc_redirect_enabled: bool = True
+    twc_token_enabled: bool = True
+
+
+class WorkbenchAuthSettingsUpdate(BaseModel):
+    user_management_mode: Literal["local", "twc"] | None = None
+    local_users_enabled: bool | None = None
+    twc_redirect_enabled: bool | None = None
+    twc_token_enabled: bool | None = None
+
+
+class WorkbenchUserRole(str, Enum):
+    USER = "user"
+    GROUP_MANAGER = "group_manager"
+    ADMIN = "admin"
+
+
+class WorkbenchUserRecord(BaseModel):
+    username: str
+    password_hash: str
+    role: WorkbenchUserRole = WorkbenchUserRole.USER
+    enabled: bool = True
+    display_name: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    last_login_at: datetime | None = None
+    password_change_required: bool = False
+
+
+class WorkbenchUserSummary(BaseModel):
+    username: str
+    role: WorkbenchUserRole
+    enabled: bool
+    display_name: str = ""
+    created_at: datetime
+    updated_at: datetime
+    last_login_at: datetime | None = None
+    accessible_project_count: int = 0
+    accessible_branch_count: int = 0
+    password_change_required: bool = False
+
+
+class WorkbenchUserCreateRequest(BaseModel):
+    username: str
+    password: str
+    role: WorkbenchUserRole = WorkbenchUserRole.USER
+    enabled: bool = True
+    display_name: str = ""
+
+    @field_validator("username", "password", "display_name", mode="before")
+    @classmethod
+    def normalize_user_create_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchUserUpdateRequest(BaseModel):
+    password: str | None = None
+    role: WorkbenchUserRole | None = None
+    enabled: bool | None = None
+    display_name: str | None = None
+
+    @field_validator("password", "display_name", mode="before")
+    @classmethod
+    def normalize_user_update_fields(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchGroupRecord(BaseModel):
+    name: str
+    description: str = ""
+    users: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class WorkbenchGroupSummary(BaseModel):
+    name: str
+    description: str = ""
+    users: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkbenchGroupCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    users: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def normalize_group_create_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    @field_validator("users", mode="before")
+    @classmethod
+    def normalize_group_users(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip().lower() for item in value.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip().lower() for item in value if str(item).strip()]
+        return []
+
+
+class WorkbenchGroupUpdateRequest(BaseModel):
+    description: str | None = None
+    users: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_group_update_description(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    @field_validator("users", mode="before")
+    @classmethod
+    def normalize_group_update_users(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        return WorkbenchGroupCreateRequest.normalize_group_users(value)
+
+
+class WorkbenchAuthAdminStatus(BaseModel):
+    settings: WorkbenchAuthSettings
+    local_user_count: int = 0
+    first_admin_setup_required: bool = False
+    can_manage_users: bool = False
+
+
 class SessionData(BaseModel):
     session_id: str = Field(default_factory=lambda: uuid4().hex)
     server: ServerProfile
@@ -262,6 +431,7 @@ class SessionSnapshot(BaseModel):
     pending_server: ServerProfile | None = None
     server_state: UserServerState | None = None
     can_manage_server_presets: bool = False
+    can_manage_groups: bool = False
     capabilities: CapabilitySummary | None = None
     preferences: SessionPreferences = Field(default_factory=SessionPreferences)
     bookmarks: list[Bookmark] = Field(default_factory=list)
@@ -1048,6 +1218,10 @@ class CacheIngestTokenRequest(BaseModel):
 
 
 class CacheIngestTokenRotateResponse(CacheIngestTokenStatus):
+    token: str
+
+
+class CacheIngestTokenRevealResponse(CacheIngestTokenStatus):
     token: str
 
 

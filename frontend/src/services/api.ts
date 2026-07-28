@@ -11,6 +11,7 @@ import {
   CacheIngestTokenRequest,
   BranchSummary,
   CacheIngestTokenRotateResponse,
+  CacheIngestTokenRevealResponse,
   CacheIngestTokenStatus,
   CapabilitySummary,
   CompareResult,
@@ -41,6 +42,15 @@ import {
   WorkbenchAgentConfigRequest,
   WorkbenchAgentKnowledgeStatus,
   WorkbenchAgentStatus,
+  WorkbenchAuthAdminStatus,
+  WorkbenchAuthSettings,
+  WorkbenchGroupCreateRequest,
+  WorkbenchGroupSummary,
+  WorkbenchGroupUpdateRequest,
+  WorkbenchLocalLoginRequest,
+  WorkbenchUserCreateRequest,
+  WorkbenchUserSummary,
+  WorkbenchUserUpdateRequest,
 } from "../models/api";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -129,6 +139,69 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
+  workbenchLogin(payload: WorkbenchLocalLoginRequest) {
+    return request<SessionSnapshot>("/auth/workbench/login", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(payload),
+    });
+  },
+  getAuthManagementStatus() {
+    return request<WorkbenchAuthAdminStatus>("/auth/management/status");
+  },
+  updateAuthManagementSettings(payload: Partial<WorkbenchAuthSettings>, csrfToken: string) {
+    return request<WorkbenchAuthSettings>("/auth/management/settings", {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  listWorkbenchUsers() {
+    return request<WorkbenchUserSummary[]>("/auth/management/users");
+  },
+  createWorkbenchUser(payload: WorkbenchUserCreateRequest, csrfToken: string) {
+    return request<WorkbenchUserSummary>("/auth/management/users", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  updateWorkbenchUser(username: string, payload: WorkbenchUserUpdateRequest, csrfToken: string) {
+    return request<WorkbenchUserSummary>(`/auth/management/users/${encodeURIComponent(username)}`, {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteWorkbenchUser(username: string, csrfToken: string) {
+    return request<{ ok: boolean }>(`/auth/management/users/${encodeURIComponent(username)}`, {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  listWorkbenchGroups() {
+    return request<WorkbenchGroupSummary[]>("/auth/management/groups");
+  },
+  createWorkbenchGroup(payload: WorkbenchGroupCreateRequest, csrfToken: string) {
+    return request<WorkbenchGroupSummary>("/auth/management/groups", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  updateWorkbenchGroup(name: string, payload: WorkbenchGroupUpdateRequest, csrfToken: string) {
+    return request<WorkbenchGroupSummary>(`/auth/management/groups/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteWorkbenchGroup(name: string, csrfToken: string) {
+    return request<{ ok: boolean }>(`/auth/management/groups/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
   listServers() {
     return request<ServerProfile[]>("/servers");
   },
@@ -192,6 +265,12 @@ export const api = {
   },
   rotateCacheIngestToken(csrfToken: string) {
     return request<CacheIngestTokenRotateResponse>("/workspace/cache-ingest-token/rotate", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  revealCacheIngestToken(csrfToken: string) {
+    return request<CacheIngestTokenRevealResponse>("/workspace/cache-ingest-token/reveal", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
     });

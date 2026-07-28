@@ -51,6 +51,17 @@ def rotate_cache_ingest_token(
     return container.platform.rotate_cache_ingest_token()
 
 
+@router.post("/cache-ingest-token/reveal")
+def reveal_cache_ingest_token(
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.reveal_cache_ingest_token()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.put("/cache-ingest-token")
 def store_cache_ingest_token(
     payload: CacheIngestTokenRequest,
@@ -73,7 +84,7 @@ def clear_cache_ingest_token(
 
 @router.get("/cache-api-keys")
 def list_cache_api_keys(
-    session=Depends(get_session),
+    session=Depends(require_admin),
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.list_cache_api_keys(session)
@@ -82,7 +93,7 @@ def list_cache_api_keys(
 @router.post("/cache-api-keys")
 def create_cache_api_key(
     payload: CacheApiKeyCreateRequest,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -94,7 +105,7 @@ def create_cache_api_key(
 @router.delete("/cache-api-keys/{key_id}")
 def delete_cache_api_key(
     key_id: str,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     deleted = container.platform.delete_cache_api_key(session, key_id)
@@ -640,7 +651,7 @@ def workbench_agent_status(session=Depends(get_session), container: ApplicationC
 @router.put("/agent")
 def update_workbench_agent_config(
     payload: WorkbenchAgentConfigRequest,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -651,14 +662,14 @@ def update_workbench_agent_config(
 
 @router.delete("/agent")
 def clear_workbench_agent_config(
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.clear_workbench_agent_config(session)
 
 
 @router.get("/agent/models")
-async def workbench_agent_models(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+async def workbench_agent_models(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
     try:
         return await container.platform.list_openwebui_models(session)
     except ValueError as exc:

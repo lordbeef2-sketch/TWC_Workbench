@@ -25,7 +25,7 @@ import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 import VerifiedUserRoundedIcon from "@mui/icons-material/VerifiedUserRounded";
 
 import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
-import { ServerHealth, TokenLoginRequest } from "../models/api";
+import { ServerHealth, TokenLoginRequest, WorkbenchLocalLoginRequest } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
@@ -52,9 +52,15 @@ export default function LandingPage() {
   const queryClient = useQueryClient();
   const { authOptions, error, session, setSessionSnapshot } = useSession();
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
+  const [localDialogOpen, setLocalDialogOpen] = useState(false);
   const [tokenForm, setTokenForm] = useState<TokenLoginRequest>({
     server_id: "",
     token: "",
+  });
+  const [localForm, setLocalForm] = useState<WorkbenchLocalLoginRequest>({
+    server_id: "",
+    username: "admin",
+    password: "",
   });
   const [banner, setBanner] = useState<{ severity: "success" | "error"; message: string } | null>(null);
 
@@ -80,6 +86,15 @@ export default function LandingPage() {
     onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const localLoginMutation = useMutation({
+    mutationFn: api.workbenchLogin,
+    onSuccess: (snapshot) => {
+      setSessionSnapshot(snapshot);
+      navigate("/workspace", { replace: true });
+    },
+    onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const healthById = new Map<string, ServerHealth>();
   healthQueries.forEach((query) => {
     if (query.data) {
@@ -92,6 +107,7 @@ export default function LandingPage() {
   const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
   const authError = searchParams.get("authError");
   const redirectSignInEnabled = authOptions?.redirect_signin_enabled !== false;
+  const localSignInEnabled = authOptions?.local_signin_enabled === true;
 
   const openTokenDialog = (serverId: string) => {
     setTokenForm({ server_id: serverId, token: "" });
@@ -101,6 +117,16 @@ export default function LandingPage() {
   const closeTokenDialog = () => {
     setTokenDialogOpen(false);
     setTokenForm((current) => ({ ...current, token: "" }));
+  };
+
+  const openLocalDialog = (serverId = "") => {
+    setLocalForm((current) => ({ ...current, server_id: serverId, password: "" }));
+    setLocalDialogOpen(true);
+  };
+
+  const closeLocalDialog = () => {
+    setLocalDialogOpen(false);
+    setLocalForm((current) => ({ ...current, password: "" }));
   };
 
   return (
@@ -301,6 +327,16 @@ export default function LandingPage() {
                                 ) : null}
                               </Stack>
                               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} sx={{ mt: "auto" }}>
+                                {localSignInEnabled ? (
+                                  <Button
+                                    fullWidth
+                                    variant="contained"
+                                    startIcon={<LoginRoundedIcon />}
+                                    onClick={() => openLocalDialog(server.id)}
+                                  >
+                                    Workbench Login
+                                  </Button>
+                                ) : null}
                                 {redirectSignInEnabled ? (
                                   <Button
                                     fullWidth
@@ -334,6 +370,11 @@ export default function LandingPage() {
                   <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
                     An administrator needs to publish at least one enabled Teamwork Cloud preset before users can sign in.
                   </Typography>
+                  {localSignInEnabled ? (
+                    <Button sx={{ mt: 2 }} variant="contained" onClick={() => openLocalDialog("")}>
+                      Workbench Setup Login
+                    </Button>
+                  ) : null}
                 </Paper>
               )}
             </Stack>
@@ -410,6 +451,44 @@ export default function LandingPage() {
             }}
           >
             Sign In with Token
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={localDialogOpen} onClose={closeLocalDialog} fullWidth maxWidth="sm">
+        <DialogTitle>Workbench Username/Password Sign-In</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Alert severity="info">
+              Local Workbench mode uses Workbench-managed users. First login can bootstrap the default admin if no users exist yet.
+            </Alert>
+            <TextField
+              label="Username"
+              value={localForm.username}
+              onChange={(event) => setLocalForm((current) => ({ ...current, username: event.target.value }))}
+              fullWidth
+            />
+            <TextField
+              label="Password"
+              type="password"
+              value={localForm.password}
+              onChange={(event) => setLocalForm((current) => ({ ...current, password: event.target.value }))}
+              fullWidth
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button onClick={closeLocalDialog}>Cancel</Button>
+          <Button
+            variant="contained"
+            startIcon={<LoginRoundedIcon />}
+            disabled={!localForm.username.trim() || !localForm.password || localLoginMutation.isPending}
+            onClick={async () => {
+              await localLoginMutation.mutateAsync(localForm);
+              closeLocalDialog();
+            }}
+          >
+            Sign In
           </Button>
         </DialogActions>
       </Dialog>

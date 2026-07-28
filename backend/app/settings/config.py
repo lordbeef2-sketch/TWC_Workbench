@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -179,6 +180,9 @@ class Settings(BaseSettings):
     twc_oslc_consumer_key: str | None = None
     twc_oslc_consumer_secret: str | None = None
     twc_oslc_callback_path: str | None = None
+    workbench_user_management_mode: Literal["local", "twc"] = "local"
+    workbench_default_admin_username: str = "admin"
+    workbench_default_admin_password: str = "admin"
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
@@ -288,6 +292,35 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("workbench_user_management_mode", mode="before")
+    @classmethod
+    def normalize_workbench_user_management_mode(cls, value: object) -> str:
+        if value is None:
+            return "local"
+        text = str(value).strip().lower().replace("-", "_")
+        if not text:
+            return "local"
+        aliases = {
+            "local": "local",
+            "workbench": "local",
+            "local_users": "local",
+            "local_user_management": "local",
+            "twc": "twc",
+            "teamwork_cloud": "twc",
+            "twc_users": "twc",
+            "twc_user_management": "twc",
+        }
+        if text not in aliases:
+            raise ValueError("WORKBENCH_USER_MANAGEMENT_MODE must be either 'local' or 'twc'")
+        return aliases[text]
+
+    @field_validator("workbench_default_admin_username", "workbench_default_admin_password", mode="before")
+    @classmethod
+    def normalize_workbench_default_admin(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
 
     @field_validator("twc_saml_return_url_parameter", mode="before")
     @classmethod

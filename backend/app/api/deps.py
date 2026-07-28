@@ -48,9 +48,29 @@ def require_admin(
     return session
 
 
+def require_group_manager(
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    if not container.platform.can_manage_groups(session):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Group manager access required")
+    return session
+
+
 def require_admin_csrf(
     request: Request,
     session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    token = request.headers.get(container.settings.csrf_header_name)
+    if not container.sessions.validate_csrf(session, token):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    return session
+
+
+def require_group_manager_csrf(
+    request: Request,
+    session=Depends(require_group_manager),
     container: ApplicationContainer = Depends(get_container),
 ):
     token = request.headers.get(container.settings.csrf_header_name)

@@ -200,6 +200,7 @@ class SessionManager:
             user=session.user,
             server=session.server,
             can_manage_server_presets=session.authorization_context.can_manage_server_presets,
+            can_manage_groups=session.authorization_context.can_manage_groups,
             capabilities=session.capabilities,
             preferences=session.preferences,
             bookmarks=session.bookmarks,
